@@ -1,0 +1,5 @@
+node_modules/
+out/
+*.ipynb_checkpoints/
+__pycache__/
+training/checkpoints/
