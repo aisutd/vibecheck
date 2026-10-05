@@ -3,3 +3,5 @@ out/
 *.ipynb_checkpoints/
 __pycache__/
 training/checkpoints/
+.env
+.env.local
