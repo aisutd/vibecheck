@@ -20,6 +20,25 @@ export function activate(context: vscode.ExtensionContext) {
 	});
 
 	context.subscriptions.push(disposable);
+
+	// NEW VibeCheck: Show Status command. 
+	const showStatus = vscode.commands.registerCommand('vibecheck.showStatus', () => {
+		// Displays a message when Show Status command runs.
+		vscode.window.showInformationMessage('VibeCheck is running.');
+	});
+
+	context.subscriptions.push(showStatus);
+
+	// Creating button to show VibeCheck status
+	const button = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Right, 100);
+
+	// Setting up the status bar button for VibeCheck and creating tooltip for hovering over the button
+	button.text = 'VibeCheck';
+	button.tooltip = 'Show VibeCheck status';
+	button.command = 'vibecheck.showStatus';
+	button.show();
+
+	context.subscriptions.push(button);
 }
 
 // This method is called when your extension is deactivated

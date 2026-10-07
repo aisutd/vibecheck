@@ -9,13 +9,17 @@
   "categories": [
     "Other"
   ],
-  "activationEvents": [],
+  "activationEvents": ["onStartupFinished"],
   "main": "./out/extension.js",
   "contributes": {
     "commands": [
       {
         "command": "vibecheck.helloWorld",
         "title": "Hello World"
+      },
+      {
+        "command": "vibecheck.showStatus",
+        "title": "Show VibeCheck Status"
       }
     ]
   },
