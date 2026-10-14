@@ -36,7 +36,7 @@ def run_opengrep(target: Path, rule_paths: list[Path], timeout: int = 300) -> di
 if __name__ == "__main__":
     import argparse
 
-    from report import normalize, write_findings_json
+    from report import normalize, write_findings_json, write_summary_md
 
     parser = argparse.ArgumentParser(description="Run Opengrep and write reports.")
     parser.add_argument("target", type=Path, help="Folder to scan")
@@ -49,6 +49,9 @@ if __name__ == "__main__":
     raw = run_opengrep(args.target, rules)
     findings = normalize(raw, args.target)
     path = write_findings_json(findings, args.out)
+    summary_path = write_summary_md(findings, args.target, args.out)
     print(f"Wrote {len(findings)} findings to {path}")
+    print(f"Wrote summary to {summary_path}")
+   
 
     
