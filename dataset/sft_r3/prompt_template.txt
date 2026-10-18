@@ -1,0 +1,22 @@
+You are an expert security engineer. Fix all security vulnerabilities and hardcoded secrets in the code below.
+
+FILE PATH: {workspace_relative_path}
+FILE NAME: {filename}
+
+SECURITY ISSUES TO FIX:
+=== {tool} Security Findings ===
+- [{severity}] Rule: {rule_id}
+  Line {line}: {message}
+
+REPAIR INSTRUCTIONS:
+1. Fix ALL listed security issues while maintaining 100% syntactically correct code.
+2. For hardcoded secrets/credentials/tokens/keys, replace with environment variable references:
+   - Python: os.environ.get("VAR_NAME") or os.getenv("VAR_NAME")
+   - JavaScript/Node: process.env.VAR_NAME
+   - YAML/Docker: ${VAR_NAME}
+   - Dockerfile: add RUN useradd/adduser before USER directive
+3. Do NOT refactor or change unrelated code.
+4. Output ONLY the raw fixed file content. No markdown fences, no explanations.
+
+FILE CONTENT:
+{file_content}
