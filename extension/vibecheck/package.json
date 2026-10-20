@@ -6,7 +6,7 @@
   "engines": {
     "vscode": "^1.135.0"
   },
-  "categories": [
+  "categories": [ 
     "Other"
   ],
   "activationEvents": ["onStartupFinished"],
@@ -20,8 +20,35 @@
       {
         "command": "vibecheck.showStatus",
         "title": "Show VibeCheck Status"
+      },
+      {
+        "command": "vibecheck.scan",
+        "title": "Scan generated code for vulnerabilities"
+      },
+      {
+        "command": "vibecheck.edit",
+        "title": "Edit generated code with proposed changes"
       }
-    ]
+    ],
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "vibecheck",
+          "title": "VibeCheck",
+          "icon": "media/vibecheck.svg"
+        }
+      ]
+    },
+    "views": { 
+      "vibecheck": [
+        {
+          "type": "webview",
+          "id": "vibecheck.sidebar",
+          "name": "Overview",
+          "icon": "media/vibecheck.svg"
+        }
+      ]
+    }
   },
   "scripts": {
     "vscode:prepublish": "npm run compile",

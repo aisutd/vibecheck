@@ -1,45 +1,108 @@
-// The module 'vscode' contains the VS Code extensibility API
-// Import the module and reference it with the alias vscode in your code below
+// Imports 'vscode' module that contains VS Code extension API and reference it with the alias vscode in your code below
 import * as vscode from 'vscode';
 
-// This method is called when your extension is activated
-// Your extension is activated the very first time the command is executed
+// VS Code calls this method when the VibeCheck extension is activated
 export function activate(context: vscode.ExtensionContext) {
+	// Outputs to console when extension is activated
+	console.log('VibeCheck extension is now active.');
 
-	// Use the console to output diagnostic information (console.log) and errors (console.error)
-	// This line of code will only be executed once when your extension is activated
-	console.log('Congratulations, your extension "vibecheck" is now active!');
+	const provider = new VibeCheckSidebar();
 
-	// The command has been defined in the package.json file
-	// Now provide the implementation of the command with registerCommand
-	// The commandId parameter must match the command field in package.json
-	const disposable = vscode.commands.registerCommand('vibecheck.helloWorld', () => {
-		// The code you place here will be executed every time your command is executed
-		// Display a message box to the user
-		vscode.window.showInformationMessage('Hello World from VibeCheck!');
-	});
+	context.subscriptions.push(
+		vscode.window.registerWebviewViewProvider(VibeCheckSidebar.viewType, provider)
+	);
 
-	context.subscriptions.push(disposable);
+	// Method for scanning codebase using opengrep and trufflehog
+	context.subscriptions.push(
+		vscode.commands.registerCommand('vibecheck.scan', () => provider.scan())
+	);
 
-	// NEW VibeCheck: Show Status command. 
-	const showStatus = vscode.commands.registerCommand('vibecheck.showStatus', () => {
-		// Displays a message when Show Status command runs.
-		vscode.window.showInformationMessage('VibeCheck is running.');
-	});
-
-	context.subscriptions.push(showStatus);
-
-	// Creating button to show VibeCheck status
-	const button = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Right, 100);
-
-	// Setting up the status bar button for VibeCheck and creating tooltip for hovering over the button
-	button.text = 'VibeCheck';
-	button.tooltip = 'Show VibeCheck status';
-	button.command = 'vibecheck.showStatus';
-	button.show();
-
-	context.subscriptions.push(button);
+	// For editing generated code using results from fine-tuned model
+	context.subscriptions.push(
+		vscode.commands.registerCommand('vibecheck.edit', () => provider.edit())
+	);
 }
 
-// This method is called when your extension is deactivated
+// Webview provider for the VibeCheck extension that extends from VS Code Webview View Provider
+class VibeCheckSidebar implements vscode.WebviewViewProvider {
+	
+	public static readonly viewType = 'vibecheck.sidebar';
+	
+	public resolveWebviewView(
+		webviewView: vscode.WebviewView,
+		context: vscode.WebviewViewResolveContext,
+		token: vscode.CancellationToken
+	) 
+	{
+		// Enabling scripts in the webview to allow for interactivity with buttons in HTML.
+		webviewView.webview.options = {
+			enableScripts: true,
+		};
+
+		// Creating a message listener to handle messages sent from the webview to the extension.
+		const listener = webviewView.webview.onDidReceiveMessage((message) => {
+			if (message.command === 'scan') {
+				this.scan();
+			}
+		});
+
+		webviewView.onDidDispose(() => {listener.dispose();});
+		
+		// HTML content for the webview, including a title, description, and buttons for scanning and editing.
+		webviewView.webview.html = `
+			<!DOCTYPE html>
+			<html lang="en">
+
+			<!-- HTML Header -->
+			<head>
+				<meta charset="UTF-8">
+				<title>VibeCheck</title>
+    		</head>
+
+			<!-- HTML Body -->
+			<body>
+       			<h1>VibeCheck</h1>
+        		<p>VibeCheck is a security companion tool that detects security issues in AI-generated code and proposes a fix for them.</p>
+				<p>Start scanning now to find vulnerabilities.</p>
+				<button id="scan-button">Run scan</button>
+				<button id="edit-button">View proposed edits</button>
+
+				<!-- Adding listener for button clicks to trigger scan and edit commands in the extension -->
+				<script>
+					const scanButton = document.getElementById('scan-button');
+					const editButton = document.getElementById('edit-button');
+
+					scanButton.addEventListener('click', () => {
+						scanButton.textContent = 'Scan requested.';
+					});
+
+					editButton.addEventListener('click', () => {
+						editButton.textContent = 'Loading proposed edits.';
+					});
+				</script>
+    		</body>
+
+    		</html>
+`;
+	}
+
+	// Creating Scan function
+	public scan() {
+		// Insert trufflehog and opengrep scan logic here.
+		vscode.window.showInformationMessage(
+        	'Scan requested.'
+    	);
+	}
+
+	// Creating Edit function
+	public edit() {
+		// Insert logic for editing scan results from model.
+		vscode.window.showInformationMessage(
+			'Loading proposed edits.'
+		)
+	}
+}
+
+
+// Method called when VibeCheck extension is deactivated.
 export function deactivate() {}
