@@ -15,6 +15,10 @@ from pathlib import Path
 
 from common import load_rows, VAL_PATH
 
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "extension" / "trufflehog"))
+os.environ.setdefault("TRUFFLEHOG_PATH", r"C:\tools\trufflehog\trufflehog.exe")
+from trufflehog_runner import run_trufflehog
+
 # rules file: <project>/rules/rules.yaml
 RULES = Path(__file__).resolve().parent.parent / "rules" / "rules.yaml"
 
@@ -49,6 +53,14 @@ def parse_prompt(prompt):
             findings.append({"rule": m.group(1).strip(), "line": None})
     return path, findings, original
 
+def th_scan(text, relpath):
+    """Run trufflehog on text at relpath; return detector names (e.g. 'Postgres')."""
+    with tempfile.TemporaryDirectory() as tmp:
+        target = Path(tmp) / relpath
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(text, encoding="utf-8")
+        result = run_trufflehog(tmp, no_verification=True)
+    return {f.detector for f in result.findings}
 
 def scan(text, relpath):
     """Save text at relpath in a temp folder, run opengrep, return the set of rule ids found."""
@@ -66,13 +78,15 @@ def scan(text, relpath):
             except subprocess.TimeoutExpired:
                 pass                            # try again
         if res is None:
+ 
             raise RuntimeError("opengrep timed out twice")
     try:
         raw = json.loads(res.stdout)
     except json.JSONDecodeError:
         raise RuntimeError("opengrep failed:\n" + res.stderr[-500:])
-    return {short(r["check_id"]) for r in raw.get("results", [])}
-
+    found = {short(r["check_id"]) for r in raw.get("results", [])}
+    found |= th_scan(text, relpath)
+    return found
 
 def _cmd_ok(cmd, relpath, text):
     with tempfile.TemporaryDirectory() as tmp:
@@ -134,7 +148,10 @@ def main():
     limit = int(sys.argv[1]) if len(sys.argv) > 1 else len(rows)
     ok_orig = ok_ref = unverifiable = counted = 0
 
-    for i, row in enumerate(rows[:limit]):
+    only = os.environ.get("ONLY")
+    indexes = [int(x) for x in only.split(",")] if only else range(min(limit, len(rows)))
+    for i in indexes:
+        row = rows[i]
         prompt = row["messages"][0]["content"]
         reference = row["messages"][1]["content"]
         path, findings, original = parse_prompt(prompt)
