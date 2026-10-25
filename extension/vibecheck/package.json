@@ -44,7 +44,7 @@
         {
           "type": "webview",
           "id": "vibecheck.sidebar",
-          "name": "Overview",
+          "name": "VibeCheck",
           "icon": "media/vibecheck.svg"
         }
       ]

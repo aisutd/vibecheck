@@ -118,8 +118,8 @@ class VibeCheckSidebar implements vscode.WebviewViewProvider {
 
 				<body>
 					<h1>VibeCheck</h1>
-					<p>VibeCheck is a security companion tool that detects security issues in AI-generated code and proposes a fix for them.</p>
-					<p><b>Start scanning to find vulnerabilities.</b></p>
+					<p>Scan AI-generated code across your codebase for potential security vulnerabilities and exposed secrets, then review proposed edits to address the findings.</p>
+					<p>Click <b>Run scan</b> to get started.</p>
 					
 					<div class="actions">
             			<button id="scan-button">Run scan</button>
