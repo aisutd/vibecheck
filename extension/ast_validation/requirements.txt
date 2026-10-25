@@ -1,0 +1,27 @@
+tree-sitter>=0.25
+tree-sitter-python
+tree-sitter-javascript
+tree-sitter-typescript
+tree-sitter-ruby
+tree-sitter-yaml
+tree-sitter-go
+tree-sitter-java
+tree-sitter-c-sharp
+tree-sitter-php
+tree-sitter-html
+tree-sitter-css
+tree-sitter-json
+tree-sitter-bash
+tree-sitter-sql
+tree-sitter-toml
+tree-sitter-hcl
+tree-sitter-xml
+tree-sitter-kotlin
+tree-sitter-c
+tree-sitter-cpp
+tree-sitter-elixir
+tree-sitter-rust
+# Optional: adds Dockerfile and many other grammars. If it fails to install or load,
+# Dockerfile/nginx/.env/.ini fall back to the checkers in fallback.py.
+tree-sitter-language-pack
+pytest
