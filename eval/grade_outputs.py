@@ -16,9 +16,10 @@ def load_outputs(path):
 
 rows = load_rows(VAL_PATH)
 outputs = load_outputs(OUT_PATH)
+N = int(sys.argv[2]) if len(sys.argv) > 2 else len(rows)
 
 passed = 0
-for i, row in enumerate(rows):
+for i, row in enumerate(rows[:N]):
     path, findings, original = parse_prompt(row["messages"][0]["content"])
     orig_rules = scan(original, path)
     answer = outputs[i]
@@ -27,4 +28,4 @@ for i, row in enumerate(rows):
     passed += ok
     print(i, path, "PASS" if ok else "FAIL", why, flush=True)
 
-print("\nPASS:", passed, "of", len(rows))
+print("\nPASS:", passed, "of", min(N,len(rows)))
