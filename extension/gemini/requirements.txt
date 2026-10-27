@@ -1,0 +1,3 @@
+google-genai>=1.50
+# Optional: syntax-check JS/TS/YAML/etc. patches with tree-sitter
+# tree-sitter-language-pack>=0.9
