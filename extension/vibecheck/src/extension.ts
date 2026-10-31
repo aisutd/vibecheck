@@ -1,6 +1,5 @@
 // Imports 'vscode' module that contains VS Code extension API and reference it with the alias vscode in your code below
 import * as vscode from 'vscode';
-import * as path from "path";
 import { execFile } from "child_process";
 import { registerFixDiff, showFix } from "./fixDiff";
 
