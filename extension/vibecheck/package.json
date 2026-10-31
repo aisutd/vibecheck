@@ -28,7 +28,12 @@
       {
         "command": "vibecheck.edit",
         "title": "Edit generated code with proposed changes"
-      }
+      },
+      {
+      "command": "vibecheck.fixCurrentFile",
+      "title": "Vibe Check: Fix Current File with Gemini"
+    }
+
     ],
     "viewsContainers": {
       "activitybar": [

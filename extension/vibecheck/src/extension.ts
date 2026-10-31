@@ -1,5 +1,8 @@
 // Imports 'vscode' module that contains VS Code extension API and reference it with the alias vscode in your code below
 import * as vscode from 'vscode';
+import * as path from "path";
+import { execFile } from "child_process";
+import { registerFixDiff, showFix } from "./fixDiff";
 
 // VS Code calls this method when the VibeCheck extension is activated
 export function activate(context: vscode.ExtensionContext) {
@@ -20,6 +23,48 @@ export function activate(context: vscode.ExtensionContext) {
 	// For editing generated code using results from fine-tuned model
 	context.subscriptions.push(
 		vscode.commands.registerCommand('vibecheck.edit', () => provider.edit())
+	);
+	// Registering the fix diff provider
+	registerFixDiff(context);
+	context.subscriptions.push(
+		vscode.commands.registerCommand('vibecheck.fixCurrentFile', async () => {
+			const editor = vscode.window.activeTextEditor;
+			if (!editor) {
+				vscode.window.showWarningMessage('Open a file first.');
+				return;
+			}
+
+			const doc = editor.document;
+			if (doc.isDirty) {
+				vscode.window.showWarningMessage('Save the file first, then run Vibe Check.');
+				return;
+			}
+
+			// extension lives at <repo>/extension/vibecheck
+			const repoRoot = path.resolve(context.extensionPath, '..', '..');
+			const python = path.join(repoRoot, '.venv', 'bin', 'python');
+			const script = path.join(repoRoot, 'dataset', 'gemini', 'fix_and_diff.py');
+
+			await vscode.window.withProgress(
+				{ location: vscode.ProgressLocation.Notification, title: 'Vibe Check: asking Gemini for a fix...' },
+				() =>
+					new Promise<void>((resolve) => {
+						execFile(
+							python,
+							[script, doc.uri.fsPath, '--stdout'],
+							{ cwd: repoRoot, timeout: 180_000, maxBuffer: 10 * 1024 * 1024 },
+							async (error, stdout, stderr) => {
+								if (error) {
+									vscode.window.showErrorMessage(`Vibe Check failed: ${stderr || error.message}`);
+								} else {
+									await showFix(doc.uri, stdout);
+								}
+								resolve();
+							}
+						);
+					})
+			);
+		})
 	);
 }
 
