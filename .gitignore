@@ -6,3 +6,4 @@ training/checkpoints/
 .env
 .env.local
 output/
+.venv/
