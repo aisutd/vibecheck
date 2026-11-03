@@ -1,7 +1,9 @@
-"""score.py - grade fixed files with opengrep plus simple checks.
+"""score.py - grade fixed files with opengrep, trufflehog and simple checks.
 
 Run:  python eval/score.py        (all 49 rows)
       python eval/score.py 3      (first 3 rows only)
+Env:  TRUFFLEHOG_PATH (path to trufflehog), OPENGREP_BIN (path to opengrep),
+      ONLY="18,25" (run only these rows)
 """
 import ast
 import json
@@ -15,10 +17,6 @@ from pathlib import Path
 
 from common import load_rows, VAL_PATH
 
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "extension" / "trufflehog"))
-os.environ.setdefault("TRUFFLEHOG_PATH", r"C:\tools\trufflehog\trufflehog.exe")
-from trufflehog_runner import run_trufflehog
-
 # rules file: <project>/rules/rules.yaml
 RULES = Path(__file__).resolve().parent.parent / "rules" / "rules.yaml"
 
@@ -26,7 +24,11 @@ RULES = Path(__file__).resolve().parent.parent / "rules" / "rules.yaml"
 _local = Path.home() / ".opengrep" / "cli" / "latest" / "opengrep.exe"
 OPENGREP = os.environ.get("OPENGREP_BIN") or (str(_local) if _local.exists() else "opengrep")
 
-PLACEHOLDERS = ["todo", "your_", "<your", "rest of the file", "rest of file", "existing code"]
+# trufflehog is called directly (no dependency on the extension folder)
+TRUFFLEHOG = os.environ.get("TRUFFLEHOG_PATH", "trufflehog")
+
+PLACEHOLDERS = ["todo", "your_", "<your", "rest of the file", "rest of file", "existing code",
+                "changeme", "example.com", "placeholder", "dummy", "replace with"]
 
 
 def short(rule_id):
@@ -53,22 +55,34 @@ def parse_prompt(prompt):
             findings.append({"rule": m.group(1).strip(), "line": None})
     return path, findings, original
 
+
 def th_scan(text, relpath):
     """Run trufflehog on text at relpath; return detector names (e.g. 'Postgres')."""
     with tempfile.TemporaryDirectory() as tmp:
         target = Path(tmp) / relpath
         target.parent.mkdir(parents=True, exist_ok=True)
-        target.write_text(text, encoding="utf-8")
-        result = run_trufflehog(tmp, no_verification=True)
-    return {f.detector for f in result.findings}
+        target.write_bytes(text.encode("utf-8"))
+        res = subprocess.run([TRUFFLEHOG, "filesystem", tmp, "--json", "--no-verification"],
+                             capture_output=True, text=True, encoding="utf-8", errors="replace")
+    found = set()
+    for line in res.stdout.splitlines():
+        try:
+            found.add(json.loads(line)["DetectorName"])
+        except (json.JSONDecodeError, KeyError):
+            pass
+    return found
+
 
 def scan(text, relpath):
-    """Save text at relpath in a temp folder, run opengrep, return the set of rule ids found."""
+    """Save text at relpath in a temp folder, run opengrep + trufflehog, return rule/detector names."""
     with tempfile.TemporaryDirectory() as tmp:
         target = Path(tmp) / relpath
         target.parent.mkdir(parents=True, exist_ok=True)
-        target.write_text(text, encoding="utf-8")
-        cmd = [OPENGREP, "scan", "--json", "--no-git-ignore", "-f", str(RULES), tmp]
+        target.write_bytes(text.encode("utf-8"))
+        cmd = [OPENGREP, "scan", "--json", "--no-git-ignore",
+               "--severity", "WARNING", "--severity", "ERROR",
+               "--timeout", "5", "--max-memory", "2048",
+               "-f", str(RULES), tmp]
         res = None
         for _ in range(2):                      # try up to 2 times
             try:
@@ -78,7 +92,6 @@ def scan(text, relpath):
             except subprocess.TimeoutExpired:
                 pass                            # try again
         if res is None:
- 
             raise RuntimeError("opengrep timed out twice")
     try:
         raw = json.loads(res.stdout)
@@ -88,10 +101,11 @@ def scan(text, relpath):
     found |= th_scan(text, relpath)
     return found
 
+
 def _cmd_ok(cmd, relpath, text):
     with tempfile.TemporaryDirectory() as tmp:
         f = Path(tmp) / Path(relpath).name
-        f.write_text(text, encoding="utf-8")
+        f.write_bytes(text.encode("utf-8"))
         return subprocess.run(cmd + [str(f)], capture_output=True).returncode == 0
 
 
@@ -132,11 +146,14 @@ def score_output(path, findings, original, orig_rules, output, out_rules):
         reasons.append("new rule ids")
     if parses(path, output) is False:                        # check 3
         reasons.append("does not parse")
-    if "`" * 3 in output:                                    # check 4 (fences)
+
+    stripped = output.strip()                                # check 4 (fences: start/end only)
+    if stripped.startswith("`" * 3) or stripped.endswith("`" * 3):
         reasons.append("markdown fence")
-    low_out, low_orig = output.lower(), original.lower()
-    if any(p in low_out and p not in low_orig for p in PLACEHOLDERS):  # check 4 (placeholders)
+    low_out, low_orig = output.lower(), original.lower()     # check 4 (placeholders)
+    if any(p in low_out and p not in low_orig for p in PLACEHOLDERS):
         reasons.append("placeholder text")
+
     ratio = len(output) / max(len(original), 1)              # check 5
     if not 0.7 <= ratio <= 1.4:
         reasons.append("length ratio %.2f" % ratio)
