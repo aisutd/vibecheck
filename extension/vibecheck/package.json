@@ -30,11 +30,34 @@
         "title": "Edit generated code with proposed changes"
       },
       {
-      "command": "vibecheck.fixCurrentFile",
-      "title": "Vibe Check: Fix Current File with Gemini"
-    }
-
+        "command": "vibecheck.acceptFix",
+        "title": "Vibe Check: Accept Fix",
+        "icon": "$(check)"
+      },
+      {
+        "command": "vibecheck.rejectFix",
+        "title": "Vibe Check: Reject Fix",
+        "icon": "$(close)"
+      },
+      {
+        "command": "vibecheck.fixCurrentFile",
+        "title": "Vibe Check: Fix Current File with Gemini"
+      }
     ],
+    "menus": {
+      "editor/title": [
+        {
+          "command": "vibecheck.acceptFix",
+          "when": "vibecheck.fixDiffActive",
+          "group": "navigation@1"
+        },
+        {
+          "command": "vibecheck.rejectFix",
+          "when": "vibecheck.fixDiffActive",
+          "group": "navigation@2"
+        }
+      ]
+    },
     "viewsContainers": {
       "activitybar": [
         {
