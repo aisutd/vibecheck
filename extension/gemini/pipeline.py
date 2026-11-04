@@ -15,7 +15,7 @@ from pathlib import Path
 
 from gemini_client import GeminiClient, GeminiError, QuotaExhaustedError
 from prompt import PromptFinding, build_prompt, group_by_file, load_opengrep, load_trufflehog
-from validate import validate_patch
+from validate import ScannerUnavailableError, check_scanners_installed, validate_patch
 
 DEFAULT_MAX_FILE_CHARS = 60_000
 
@@ -51,7 +51,7 @@ def repair_file(
     root: Path,
     relative_path: str,
     findings: list[PromptFinding],
-    rule_paths: list[Path] | None = None,
+    rule_paths: list[Path],
     max_file_chars: int = DEFAULT_MAX_FILE_CHARS,
 ) -> dict:
     """Prompt Gemini for one file, validate the patch and return a record describing what happened."""
@@ -97,7 +97,8 @@ def repair_file(
         fixed=fixed,
         usage=result.usage,
         syntax=check.syntax,
-        rescan=check.rescan,
+        opengrep=check.opengrep,
+        trufflehog=check.trufflehog,
         status="accepted" if check.accepted else "rejected",
         reasons=check.reasons,
     )
@@ -143,7 +144,7 @@ def build_dataset(
     root: Path,
     findings: list[PromptFinding],
     out_dir: Path,
-    rule_paths: list[Path] | None = None,
+    rule_paths: list[Path],
     workers: int = 4,
     max_file_chars: int = DEFAULT_MAX_FILE_CHARS,
 ) -> dict:
@@ -194,7 +195,7 @@ def build_dataset(
             try:
                 record = repair_file(client, root, relative_path, file_findings, rule_paths, max_file_chars)
             except Exception as e:
-                # e.g. opengrep missing for --rules. Log it and keep going instead of losing the whole run.
+                # Unexpected failure. Log it and keep going instead of losing the whole run.
                 return {"app": app, "file": relative_path, "status": "error", "reasons": [f"{type(e).__name__}: {e}"]}
             if record.get("quota_exhausted"):
                 quota_gone.set()
@@ -221,7 +222,8 @@ def main():
     def common(p):
         p.add_argument("--opengrep", type=Path, help="findings.json from opengrep/runner.py, or raw opengrep --json")
         p.add_argument("--trufflehog", type=Path, help="trufflehog_report.json from vibecheck-trufflehog")
-        p.add_argument("--rules", type=Path, nargs="*", help="Opengrep rule folders; re-scan each patch with them")
+        p.add_argument("--rules", type=Path, nargs="+", required=True,
+                       help="Opengrep rule folders; every patched file is re-scanned with them")
         p.add_argument("--model", help="Gemini model id (default: $VIBECHECK_GEMINI_MODEL or gemini-3.1-pro-preview)")
         p.add_argument("--thinking-level", choices=["low", "medium", "high"], help="Gemini thinking level")
         p.add_argument("--max-file-chars", type=int, default=DEFAULT_MAX_FILE_CHARS)
@@ -240,6 +242,12 @@ def main():
     args = parser.parse_args()
     if not args.opengrep and not args.trufflehog:
         parser.error("pass --opengrep and/or --trufflehog")
+
+    try:
+        check_scanners_installed()
+    except ScannerUnavailableError as e:
+        print(f"Error: {e}", file=sys.stderr)
+        sys.exit(2)
 
     try:
         client = GeminiClient(model=args.model, thinking_level=args.thinking_level)

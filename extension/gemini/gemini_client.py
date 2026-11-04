@@ -113,7 +113,7 @@ class GeminiClient:
             from google import genai
             from google.genai import types
         except ImportError:
-            raise GeminiError("google-genai is not installed. Run: pip install -r requirements.txt")
+            raise GeminiError("google-genai is not installed. Run: pip install google-genai")
 
         api_key = api_key or os.environ.get("GEMINI_API_KEY") or os.environ.get("GOOGLE_API_KEY")
         if not api_key:
