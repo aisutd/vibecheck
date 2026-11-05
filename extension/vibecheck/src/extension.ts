@@ -42,7 +42,7 @@ export function activate(context: vscode.ExtensionContext) {
 
 			const doc = editor.document;
 			if (doc.isDirty) {
-				vscode.window.showWarningMessage('Save the file first, then run Vibe Check.');
+				vscode.window.showWarningMessage('Save the file first, then run VibeCheck.');
 				return;
 			}
 
@@ -52,7 +52,7 @@ export function activate(context: vscode.ExtensionContext) {
 			const script = path.join(repoRoot, 'dataset', 'gemini', 'fix_and_diff.py');
 
 			await vscode.window.withProgress(
-				{ location: vscode.ProgressLocation.Notification, title: 'Vibe Check: asking Gemini for a fix...' },
+				{ location: vscode.ProgressLocation.Notification, title: 'VibeCheck: Running Gemini model to propose fixes...' },
 				() =>
 					new Promise<void>((resolve) => {
 						execFile(
@@ -61,7 +61,7 @@ export function activate(context: vscode.ExtensionContext) {
 							{ cwd: repoRoot, timeout: 180_000, maxBuffer: 10 * 1024 * 1024 },
 							async (error, stdout, stderr) => {
 								if (error) {
-									vscode.window.showErrorMessage(`Vibe Check failed: ${stderr || error.message}`);
+									vscode.window.showErrorMessage(`VibeCheck edits failed: ${stderr || error.message}`);
 								} else {
 									await showFix(doc.uri, stdout);
 								}
@@ -105,13 +105,20 @@ class VibeCheckSidebar implements vscode.WebviewViewProvider {
 			if (message.command === 'edit') {
 				this.edit();
 			}
-			//  If the webview is ready and previous scan results exists, send them to the webview to display.
-			if (message.command === 'ready' && this.latestSummary) {
+			// Restore the loading state and saved results when the sidebar reopens.
+		if (message.command === 'ready') {
+			webviewView.webview.postMessage({
+				type: 'scanState',
+				scanning: this.scanning
+			});
+
+			if (this.latestSummary) {
 				webviewView.webview.postMessage({
 					type: 'scanResults',
 					summary: this.latestSummary
 				});
 			}
+		}
 		});
 
 		webviewView.onDidDispose(() => {listener.dispose();});
@@ -177,6 +184,10 @@ class VibeCheckSidebar implements vscode.WebviewViewProvider {
             			.actions button[hidden] {
                 			display: none;
             			}
+						.actions button:disabled {
+							opacity: 0.5;
+							cursor: not-allowed;
+						}
 						/* Styling for the findings list and its elements */
 						.findings-header {
 							display: flex;
@@ -240,7 +251,10 @@ class VibeCheckSidebar implements vscode.WebviewViewProvider {
 							font-variant-numeric: tabular-nums;
 						}
 						#scan-results {
-							margin-top: 50px;
+							margin-top: 28px;
+						}
+						#scan-results .actions {
+							margin-top: 28px;
 						}
 						/* Styling for the summary horizontal bar chart and its elements */
 						.distribution-caption {
@@ -273,6 +287,36 @@ class VibeCheckSidebar implements vscode.WebviewViewProvider {
 							min-width: 0;
 							overflow-wrap: anywhere;
 						}
+						/* Styling for the scan progress bar and its elements */
+						#scan-loading {
+							width: 100%;
+							max-width: 320px;
+							margin: 24px auto 0;
+						}
+						#scan-status {
+							margin: 0 0 10px;
+							font-size: 12px;
+						}
+						.scan-track {
+							height: 8px;
+							background: rgba(50, 185, 133, 0.15);
+							border-radius: 4px;
+							overflow: hidden;
+						}
+						.scan-moving-bar {
+							width: 35%;
+							height: 100%;
+							background: #32B985;
+							border-radius: 4px;
+							animation: scan-slide 1.6s ease-in-out infinite;
+						}
+						@keyframes scan-slide {
+							from {transform: translateX(-100%);}
+							to {transform: translateX(286%);}
+						}
+						@media (prefers-reduced-motion: reduce) {
+							.scan-moving-bar {animation: none; transform: translateX(93%);}
+						}
 					</style>
 				</head>
 
@@ -285,10 +329,20 @@ class VibeCheckSidebar implements vscode.WebviewViewProvider {
 					<p>Scan AI-generated code across your codebase for potential security vulnerabilities and exposed secrets, then review proposed edits to address the findings.</p>
 					<p>Click <b>Run scan</b> to get started.</p>
 					
-					<div class="actions">
-            			<button id="scan-button">Run scan</button>
-            			<button id="edit-button">View proposed edits</button>
+					<div class = "actions">
+            			<button id = "scan-button">Run scan</button>
         			</div>
+
+					<!-- Show scanning progress beneath the Run scan button. -->
+					<div id="scan-loading" hidden>
+						<p id="scan-status" role="status">Scanning your codebase…</p>
+
+						<div class="scan-track"
+							role="progressbar"
+							aria-label="Scanning your codebase">
+							<div class="scan-moving-bar"></div>
+						</div>
+					</div>
 
 					<!-- Section to display summarized horizontal bar chart and findings with their counts. Hidden by default until scan results are available. -->
 					<section id="scan-results" hidden>
@@ -301,6 +355,10 @@ class VibeCheckSidebar implements vscode.WebviewViewProvider {
 							<span>Count</span>
 						</div>
 						<ul id="findings-list"></ul>
+						
+						<div class = "actions">
+							<button id="edit-button">View proposed edits</button>
+						</div>
 					</section>
 
 					<!-- Adding listener for button clicks to trigger scan and edit commands in the extension -->
@@ -338,6 +396,19 @@ class VibeCheckSidebar implements vscode.WebviewViewProvider {
 						// Adding a message listener to receive scan results from the extension and update the webview with the findings summary.
 						window.addEventListener('message', event => {
 							const message = event.data;
+
+							// Showing scan loading bar and disable the buttons while scanning.
+							if (message.type === 'scanState') {
+								const isScanning = message.scanning;
+
+								document.getElementById('scan-loading').hidden = !isScanning;
+
+								scanButton.disabled = isScanning;
+								editButton.disabled = isScanning;
+								scanButton.textContent = isScanning ? 'Scanning…' : 'Run scan';
+
+								return;
+							}
 
 							// Ignoring messages that are not scan results and exiting the listener early.
 							if (message.type !== 'scanResults') {
@@ -432,6 +503,15 @@ class VibeCheckSidebar implements vscode.WebviewViewProvider {
 		`;
 	}
 
+	// Update the scan state and tell the webview to show or hide the loading bar.
+	private setScanning(scanning: boolean): void {
+		this.scanning = scanning;
+
+		this.view?.webview.postMessage({
+			type: 'scanState', scanning
+		});
+	}
+
 	// Creating Scan function to connect with opengrep and trufflehog runner.py files to scan the codebase for vulnerabilities.
 	public scan() {
 		// Preliminary check to ensure that a workspace folder is open.
@@ -446,10 +526,9 @@ class VibeCheckSidebar implements vscode.WebviewViewProvider {
 			vscode.window.showWarningMessage('A scan is already running.');
 			return;
 		}
-		this.scanning = true;
+		this.setScanning(true);
 
-		// Displaying notification message in VS Code/Debug Console to indicate that a scan has been requested.
-		vscode.window.showInformationMessage('Scan requested.');
+		// Displaying notification message in Debug Console to indicate that a scan has been requested.
 		console.log('Preparing to scan the codebase...');
 
 		// Starting target path at first workspace folder in selected codebase
@@ -490,7 +569,7 @@ class VibeCheckSidebar implements vscode.WebviewViewProvider {
 
 			vscode.window.showErrorMessage(`Could not clear old reports: ${message}`);
 
-			this.scanning = false;
+			this.setScanning(false);
 			return;
 		}
 
@@ -589,7 +668,7 @@ class VibeCheckSidebar implements vscode.WebviewViewProvider {
 					`Could not load scan results: ${message}`
 				);
 			} finally {
-				this.scanning = false;
+				this.setScanning(false);
 			}
 		};
 
