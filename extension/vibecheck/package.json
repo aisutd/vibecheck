@@ -29,15 +29,21 @@
         "command": "vibecheck.edit",
         "title": "Edit generated code with proposed changes"
       },
-      {
+        {
         "command": "vibecheck.acceptFix",
         "title": "Vibe Check: Accept Fix",
-        "icon": "$(check)"
+        "icon": {
+          "light": "media/accept-icon.svg",
+          "dark": "media/accept-icon.svg"
+        }
       },
       {
         "command": "vibecheck.rejectFix",
         "title": "Vibe Check: Reject Fix",
-        "icon": "$(close)"
+        "icon": {
+          "light": "media/reject-icon.svg",
+          "dark": "media/reject-icon.svg"
+        }
       },
       {
         "command": "vibecheck.fixCurrentFile",

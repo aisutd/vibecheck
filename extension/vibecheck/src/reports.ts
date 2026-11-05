@@ -6,8 +6,11 @@ import * as path from 'node:path';
 // What single line output from each scanner should be used to categorize findings.
 export interface FindingCategory {name: string; scanner: 'Opengrep' | 'TruffleHog'; count: number;}
 
-// Summarized findings including total number of findings and categories.
-export interface ScanSummary {totalFindings: number; categories: FindingCategory[];}
+// Number of findings in a single file, with the path relative to the scanned folder.
+export interface FileSummary {path: string; count: number;}
+
+// Summarized findings including total number of findings, categories, and files.
+export interface ScanSummary {totalFindings: number; categories: FindingCategory[]; files: FileSummary[];}
 
 // Checking to see if a value is an object (not null and not an array).
 function isObject(value: unknown): value is Record<string, unknown> {
@@ -89,11 +92,46 @@ export async function loadReports(folderPath: string): Promise<ScanSummary> {
 		throw new Error('TruffleHog detector counts do not match its total.');
 	}
 
+	// Counting findings in each file across both scanners.
+	if (!Array.isArray(trufflehog.findings)) {
+		throw new Error('TruffleHog report is missing its findings list.');
+	}
+
+	const fileCounts = new Map<string, number>();
+
+	const countFile = (file: unknown) => {
+		if (typeof file !== 'string' || !file.trim()) {
+			throw new Error('A finding is missing its file path.');
+		}
+
+		// Keeps paths relative to the scanned folder so the same file matches across both reports.
+		const relativePath = path.isAbsolute(file) ? path.relative(folderPath, file) : file;
+		fileCounts.set(relativePath, (fileCounts.get(relativePath) ?? 0) + 1);
+	};
+
+	for (const finding of opengrep.findings) {
+		if (isObject(finding)) {
+			countFile(finding.file);
+		}
+	}
+
+	for (const finding of trufflehog.findings) {
+		if (isObject(finding)) {
+			countFile(finding.file);
+		}
+	}
+
+	// Show the files with the most findings first.
+	const files: FileSummary[] = [...fileCounts]
+		.map(([filePath, count]) => ({ path: filePath, count }))
+		.sort((a, b) => b.count - a.count || a.path.localeCompare(b.path));
+
 	// Show the most frequent finding types first.
 	categories.sort((a, b) => b.count - a.count || a.name.localeCompare(b.name));
 
 	return {
 		totalFindings: opengrep.findings.length + secretCount,
-		categories
+		categories,
+		files
 	};
 }
