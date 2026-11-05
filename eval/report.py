@@ -1,11 +1,11 @@
 """
-Evaluate original, baseline, trained, and reference code using score.py.
+Evaluate original, baseline, trained, and reference code using batch_scan and score_output.
 
 Inputs:
     Validation dataset and baseline/trained output JSONL files.
 
 Processing:
-    Scan each version and apply the team's grading checks.
+    Batch-scan all versions in one tree and apply the team's grading checks.
 
 Outputs:
     Overall and per-file-type pass rates printed to the terminal,
@@ -18,10 +18,12 @@ Run from the repository root:
 
 import argparse
 import json
+import tempfile
 from pathlib import Path
 
+from batch import batch_scan
 from common import load_rows, VAL_PATH
-from score import parse_prompt, scan, score_output, short
+from score import parse_prompt, score_output, short
 
 # Show the four systems in a consistent order.
 SYSTEMS = ["original", "base", "trained", "reference"]
@@ -68,7 +70,7 @@ def show_rate(results):
 
 
 def main():
-    """Load answers, grade all four systems, and summarize the results."""
+    """Load answers, batch-grade all four systems, and summarize the results."""
 
     # Allow input/output paths and a small test limit to be selected.
     parser = argparse.ArgumentParser()
@@ -144,12 +146,23 @@ def main():
         reference = messages[-1]["content"]
         examples.append((i, path, findings, original, reference))
 
+    # Stage all 4 systems for all rows into a single batch dictionary.
+    files = {}
+    for i, path, findings, original, reference in examples:
+        files[f"row_{i:03d}/original"] = (path, original)
+        files[f"row_{i:03d}/base"] = (path, base_outputs[i])
+        files[f"row_{i:03d}/trained"] = (path, trained_outputs[i])
+        files[f"row_{i:03d}/reference"] = (path, reference)
+
+    print(f"Batch-scanning {len(files)} files across {count} examples...", flush=True)
+    with tempfile.TemporaryDirectory() as root:
+        found = batch_scan(files, root)
+
     results = []
     unverifiable = 0
 
     for i, path, findings, original, reference in examples:
-        # Reuse the original scan as the comparison for all systems.
-        orig_rules = scan(original, path)
+        orig_rules = found[f"row_{i:03d}/original"]
 
         # Check whether scanners detect any listed issue in the original.
         listed = {short(finding["rule"]) for finding in findings}
@@ -175,11 +188,7 @@ def main():
         }
 
         for system, answer in answers.items():
-            # Avoid scanning again when an answer equals the original.
-            answer_rules = (
-                orig_rules if answer == original
-                else scan(answer, path)
-            )
+            answer_rules = found[f"row_{i:03d}/{system}"]
 
             # Apply the existing team's checks without changing them.
             passed, reasons = score_output(
