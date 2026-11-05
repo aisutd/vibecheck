@@ -7,3 +7,7 @@ training/checkpoints/
 .env.local
 output/
 .venv/
+sft_train_expanded_700.jsonl
+manifest.json
+audit/
+rules/
