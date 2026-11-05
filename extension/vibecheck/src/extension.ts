@@ -32,49 +32,55 @@ export function activate(context: vscode.ExtensionContext) {
 	);
 	// Registering the fix diff provider
 	registerFixDiff(context);
-	context.subscriptions.push(
+		context.subscriptions.push(
 		vscode.commands.registerCommand('vibecheck.fixCurrentFile', async () => {
 			const editor = vscode.window.activeTextEditor;
 			if (!editor) {
 				vscode.window.showWarningMessage('Open a file first.');
 				return;
 			}
-
-			const doc = editor.document;
-			if (doc.isDirty) {
-				vscode.window.showWarningMessage('Save the file first, then run VibeCheck.');
-				return;
-			}
-
-			// extension lives at <repo>/extension/vibecheck
-			const repoRoot = path.resolve(context.extensionPath, '..', '..');
-			const python = path.join(repoRoot, '.venv', 'bin', 'python');
-			const script = path.join(repoRoot, 'dataset', 'gemini', 'fix_and_diff.py');
-
-			await vscode.window.withProgress(
-				{ location: vscode.ProgressLocation.Notification, title: 'VibeCheck: Running Gemini model to propose fixes...' },
-				() =>
-					new Promise<void>((resolve) => {
-						execFile(
-							python,
-							[script, doc.uri.fsPath, '--stdout'],
-							{ cwd: repoRoot, timeout: 180_000, maxBuffer: 10 * 1024 * 1024 },
-							async (error, stdout, stderr) => {
-								if (error) {
-									vscode.window.showErrorMessage(`VibeCheck edits failed: ${stderr || error.message}`);
-								} else {
-									await showFix(doc.uri, stdout);
-								}
-								resolve();
-							}
-						);
-					})
-			);
+			await fixFile(editor.document.uri, context.extensionPath);
 		})
 	);
 }
 
-// Webview provider for the VibeCheck extension that extends from VS Code Webview View Provider
+// Runs the Gemini fix script on a file and opens the result in a diff view.
+async function fixFile(uri: vscode.Uri, extensionPath: string): Promise<void> {
+	const doc = await vscode.workspace.openTextDocument(uri);
+	const fileName = path.basename(uri.fsPath);
+
+	if (doc.isDirty) {
+		vscode.window.showWarningMessage(`Save ${fileName} first, then run Vibe Check.`);
+		return;
+	}
+
+	// extension lives at <repo>/extension/vibecheck
+	const repoRoot = path.resolve(extensionPath, '..', '..');
+	const python = 'python';
+	const script = path.join(repoRoot, 'dataset', 'gemini', 'fix_and_diff.py');
+
+	await vscode.window.withProgress(
+		{ location: vscode.ProgressLocation.Notification, title: `Vibe Check: asking Gemini to fix ${fileName}...` },
+		() =>
+			new Promise<void>((resolve) => {
+				execFile(
+					python,
+					[script, uri.fsPath, '--stdout'],
+					{ cwd: repoRoot, timeout: 180_000, maxBuffer: 10 * 1024 * 1024 },
+					async (error, stdout, stderr) => {
+						if (error) {
+							vscode.window.showErrorMessage(`Vibe Check failed: ${stderr || error.message}`);
+						} else {
+							await showFix(uri, stdout);
+						}
+						resolve();
+					}
+				);
+			})
+	);
+}
+
+// Webview provider that extends from VS Code Webview View Provider
 class VibeCheckSidebar implements vscode.WebviewViewProvider {
 	
 	public static readonly viewType = 'vibecheck.sidebar';
@@ -105,20 +111,23 @@ class VibeCheckSidebar implements vscode.WebviewViewProvider {
 			if (message.command === 'edit') {
 				this.edit();
 			}
-			// Restore the loading state and saved results when the sidebar reopens.
-		if (message.command === 'ready') {
-			webviewView.webview.postMessage({
-				type: 'scanState',
-				scanning: this.scanning
-			});
-
-			if (this.latestSummary) {
-				webviewView.webview.postMessage({
-					type: 'scanResults',
-					summary: this.latestSummary
-				});
+			// Fix button in the files list.
+			if (message.command === 'fix' && typeof message.file === 'string') {
+				void this.fixFromSidebar(message.file);
 			}
-		}
+			// Restore the loading state and saved results when the sidebar reopens.
+			if (message.command === 'ready') {
+				webviewView.webview.postMessage({
+					type: 'scanState',
+					scanning: this.scanning
+				});
+				if (this.latestSummary) {
+					webviewView.webview.postMessage({
+						type: 'scanResults',
+						summary: this.latestSummary
+					});
+				}
+			}
 		});
 
 		webviewView.onDidDispose(() => {listener.dispose();});
@@ -287,6 +296,60 @@ class VibeCheckSidebar implements vscode.WebviewViewProvider {
 							min-width: 0;
 							overflow-wrap: anywhere;
 						}
+					    /* For the files list with a Fix button */
+						#files-section {
+							margin-top: 24px;
+						}
+						#files-section[hidden] {
+							display: none;
+						}
+						#files-list {
+							padding: 0;
+							margin: 0;
+						}
+						#files-list li {
+							list-style: none;
+							display: flex;
+							align-items: center;
+							gap: 10px;
+							box-sizing: border-box;
+							min-height: 40px;
+							padding: 8px 10px;
+							margin: 0 0 8px;
+							border-radius: 3px;
+							background: var(--vscode-editorWidget-background);
+						}
+						.file-name {
+							flex: 1;
+							min-width: 0;
+							overflow-wrap: anywhere;
+							font-size: 14px;
+						}
+						.file-count {
+							flex-shrink: 0;
+							font-size: 12px;
+							color: var(--vscode-descriptionForeground);
+							font-variant-numeric: tabular-nums;
+						}
+						.fix-button {
+							flex-shrink: 0;
+							height: 22px;
+							padding: 0 12px;
+							border: 1px solid transparent;
+							border-radius: 6px;
+							font: inherit;
+							font-size: 12px;
+							cursor: pointer;
+							background: #32B985;
+							color: #10251C;
+						}
+						.fix-button:hover {
+							background: #40C995;
+						}
+						.fix-button:focus-visible {
+							outline: 2px solid var(--vscode-focusBorder);
+							outline-offset: 2px;
+						}
 						/* Styling for the scan progress bar and its elements */
 						#scan-loading {
 							width: 100%;
@@ -355,10 +418,21 @@ class VibeCheckSidebar implements vscode.WebviewViewProvider {
 							<span>Count</span>
 						</div>
 						<ul id="findings-list"></ul>
+
+						<!-- Files Hidden until there are files to show. -->
+						<div id="files-section" hidden>
+							<div class="findings-header">
+								<span>File</span>
+								<span>Issues</span>
+							</div>
+							<ul id="files-list"></ul>
+						</div>
+
 						
 						<div class = "actions">
 							<button id="edit-button">View proposed edits</button>
 						</div>
+
 					</section>
 
 					<!-- Adding listener for button clicks to trigger scan and edit commands in the extension -->
@@ -493,6 +567,43 @@ class VibeCheckSidebar implements vscode.WebviewViewProvider {
 								item.append(bar, label);
 								list.appendChild(item);
 							}
+
+
+
+							// Build the files list.
+							const filesSection = document.getElementById('files-section');
+							const filesList = document.getElementById('files-list');
+							const files = message.summary.files || [];
+
+							filesList.replaceChildren();
+							filesSection.hidden = files.length === 0;
+
+							for (const file of files) {
+								const fileItem = document.createElement('li');
+
+								const fileName = document.createElement('span');
+								fileName.className = 'file-name';
+								fileName.textContent = file.path;
+								fileName.title = file.path;
+
+								const fileCount = document.createElement('span');
+								fileCount.className = 'file-count';
+								fileCount.textContent = file.count + (file.count === 1 ? ' issue' : ' issues');
+
+								const fixButton = document.createElement('button');
+								fixButton.className = 'fix-button';
+								fixButton.textContent = 'Fix';
+								fixButton.setAttribute('aria-label', 'Fix ' + file.path);
+
+								// Ask the extension to fix this file (the extension handles it in step 4).
+								fixButton.addEventListener('click', () => {
+									vscode.postMessage({ command: 'fix', file: file.path });
+								});
+
+								fileItem.append(fileName, fileCount, fixButton);
+								filesList.appendChild(fileItem);
+							}
+
 						});
 
 						// Tell the extension the webview is ready so it can resend saved results.
@@ -576,7 +687,7 @@ class VibeCheckSidebar implements vscode.WebviewViewProvider {
 		// Runs the Opengrep scanner script with the runner and target paths.
 		console.log('Opengrep scan in progress...');
 		const opengrepScanner = spawn(
-			'python3',
+			'python',
 			[opengrepRunnerPath, targetPath, '--out', outputPath],
 			{
 				cwd: targetPath,
@@ -593,7 +704,7 @@ class VibeCheckSidebar implements vscode.WebviewViewProvider {
 		// Runs the Trufflehog scanner script with the runner and target paths.
 		console.log('Trufflehog scan in progress...');
 		const trufflehogScanner = spawn(
-			'python3',
+			'python',
 			[trufflehogRunnerPath, targetPath, '--output', outputPath, '--no-verification'],
 			{
 				cwd: targetPath,
@@ -703,6 +814,33 @@ class VibeCheckSidebar implements vscode.WebviewViewProvider {
 		vscode.window.showInformationMessage(
 			'Loading proposed edits.'
 		)
+	}
+
+	// Fixes a file chosen from the sidebar's files list.
+	private async fixFromSidebar(relativePath: string): Promise<void> {
+		const folders = vscode.workspace.workspaceFolders;
+		if (!folders || folders.length === 0) {
+			vscode.window.showErrorMessage('No workspace folder is open.');
+			return;
+		}
+
+		// Same folder the scan used, so the relative paths line up.
+		const projectRoot = folders[0].uri.fsPath;
+		const fullPath = path.resolve(projectRoot, relativePath);
+
+		// Security check: refuse paths that point outside the project folder.
+		const insideCheck = path.relative(projectRoot, fullPath);
+		if (insideCheck.startsWith('..') || path.isAbsolute(insideCheck)) {
+			vscode.window.showErrorMessage('Vibe Check will only fix files inside the open project.');
+			return;
+		}
+
+		try {
+			await fixFile(vscode.Uri.file(fullPath), this.extensionUri.fsPath);
+		} catch (error) {
+			const message = error instanceof Error ? error.message : String(error);
+			vscode.window.showErrorMessage(`Could not fix ${relativePath}: ${message}`);
+		}
 	}
 }
 
