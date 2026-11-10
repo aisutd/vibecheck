@@ -1,26 +1,34 @@
-"""Checks a Gemini patch must pass before it goes into the dataset or is shown to the user.
+"""Validate a file returned by Gemini before it is accepted.
 
-Every check is required and a patch is rejected if any one fails. The AST, Opengrep and
-TruffleHog scans run on the returned file alone, never on the rest of the repo.
+Three checks run on an isolated temporary copy of the returned content, never on the
+repository file:
+
+  ast         the file parses with a syntax parser for its type
+  opengrep    an Opengrep scan of that file alone, with the given rules, finds nothing
+  trufflehog  a TruffleHog scan of that file alone finds no secrets
+
+The result is accepted only if all three pass. A check that is missing, errors or
+can't complete counts as a failure.
 """
 
 import ast
 import json
-import re
 import shutil
 import sys
 import tempfile
-from dataclasses import dataclass, field
+from dataclasses import asdict, dataclass, field
 from pathlib import Path, PurePosixPath
-
-from prompt import PromptFinding
 
 EXTENSION_DIR = Path(__file__).resolve().parent.parent
 for _scanner in ("opengrep", "trufflehog"):
     if str(EXTENSION_DIR / _scanner) not in sys.path:
         sys.path.insert(0, str(EXTENSION_DIR / _scanner))
 
-# Tree-sitter grammar names for the file types we see most in vibe-coded apps.
+PASSED = "passed"
+FAILED = "failed"  # the check ran and found a problem
+ERROR = "error"  # the check could not run or complete
+
+# Tree-sitter grammar names, for file types without a parser in the standard library.
 TREE_SITTER_LANGUAGES = {
     ".js": "javascript", ".jsx": "javascript", ".mjs": "javascript", ".cjs": "javascript",
     ".ts": "typescript", ".tsx": "tsx", ".java": "java", ".go": "go", ".rb": "ruby",
@@ -32,169 +40,159 @@ TREE_SITTER_LANGUAGES = {
 }
 TREE_SITTER_FILENAMES = {"dockerfile": "dockerfile", "containerfile": "dockerfile"}
 
-# Signs the model skipped part of the file instead of returning all of it.
-PLACEHOLDER_PATTERNS = [
-    r"\.\.\.\s*\(?(rest|remainder) of (the )?(file|code)",
-    r"(//|#|/\*)\s*\.\.\.\s*(existing|unchanged|same|rest)",
-    r"(//|#)\s*(existing|unchanged|rest of the) code",
-]
 
-# Image digests (python:3.11@sha256:...) and SRI hashes (integrity="sha384-...") the model can't know.
-# In testing Gemini "pinned" a Dockerfile base image to a digest it made up, which breaks the build.
-DIGEST_PATTERN = re.compile(r"sha(?:256|384|512)[:-][A-Za-z0-9+/=]{40,}")
+class ValidatorUnavailableError(Exception):
+    """A check can't be performed, so there is no point asking Gemini for a fix."""
 
 
-class ScannerUnavailableError(Exception):
-    """A required scanner (tree-sitter, Opengrep or TruffleHog) is not installed."""
+@dataclass
+class CheckResult:
+    status: str  # PASSED, FAILED or ERROR
+    reason: str
 
 
 @dataclass
 class ValidationResult:
-    accepted: bool = True
-    reasons: list[str] = field(default_factory=list)
-    syntax: str = "not run"  # "ok" or "failed"
-    opengrep: str = "not run"
-    trufflehog: str = "not run"
+    ast: CheckResult
+    opengrep: CheckResult
+    trufflehog: CheckResult
 
-    def reject(self, reason: str):
-        self.accepted = False
-        self.reasons.append(reason)
+    @property
+    def accepted(self) -> bool:
+        return all(c.status == PASSED for c in (self.ast, self.opengrep, self.trufflehog))
+
+    def to_dict(self) -> dict:
+        return {name: asdict(check) for name, check in vars(self).items()}
 
 
-def check_scanners_installed():
-    """Fail before any Gemini call if a required scanner is missing, instead of rejecting every patch."""
+def _tree_sitter_language(path: str) -> str | None:
+    p = PurePosixPath(path)
+    return TREE_SITTER_LANGUAGES.get(p.suffix.lower()) or TREE_SITTER_FILENAMES.get(p.name.lower())
+
+
+def check_validators_ready(path: str, rule_paths: list[Path]):
+    """Raise ValidatorUnavailableError if any check can't run on `path`. Call before Gemini."""
     from trufflehog_runner import TruffleHogNotFoundError, find_trufflehog
 
-    missing = []
-    try:
-        import tree_sitter_language_pack  # noqa: F401
-    except ImportError:
-        missing.append("tree-sitter-language-pack (pip install tree-sitter-language-pack)")
+    problems = []
+
+    suffix = PurePosixPath(path).suffix.lower()
+    if suffix not in (".py", ".json"):
+        language = _tree_sitter_language(path)
+        if language is None:
+            problems.append(f"no syntax parser for this file type ({suffix or PurePosixPath(path).name})")
+        else:
+            try:
+                from tree_sitter_language_pack import get_parser
+
+                get_parser(language)
+            except Exception as e:
+                problems.append(f"tree-sitter parser for {language} is not available ({type(e).__name__}: {e})")
+
     if shutil.which("opengrep") is None:
-        missing.append("opengrep (not on PATH)")
+        problems.append("opengrep is not on PATH")
+    if not rule_paths:
+        problems.append("no Opengrep rule paths given (--rules)")
+    problems += [f"Opengrep rules path does not exist: {r}" for r in rule_paths if not r.exists()]
+
     try:
         find_trufflehog()
     except TruffleHogNotFoundError:
-        missing.append("trufflehog (not on PATH or $TRUFFLEHOG_PATH)")
-    if missing:
-        raise ScannerUnavailableError("Required scanners missing: " + ", ".join(missing))
+        problems.append("trufflehog is not on PATH or $TRUFFLEHOG_PATH")
+
+    if problems:
+        raise ValidatorUnavailableError("; ".join(problems))
 
 
-def _syntax_error(path: str, code: str) -> str | None:
-    """Return an error message if `code` doesn't parse (or can't be parsed), None if it does."""
-    name = PurePosixPath(path).name.lower()
-    suffix = PurePosixPath(path).suffix.lower()
+def _check_ast(file: Path) -> CheckResult:
+    code = file.read_bytes().decode("utf-8")
+    suffix = file.suffix.lower()
 
     if suffix == ".py":
         try:
             ast.parse(code)
-            return None
         except SyntaxError as e:
-            return f"Python syntax error on line {e.lineno}: {e.msg}"
+            return CheckResult(FAILED, f"Python syntax error on line {e.lineno}: {e.msg}")
+        return CheckResult(PASSED, "parsed with Python ast")
 
     if suffix == ".json":
         try:
             json.loads(code)
-            return None
         except json.JSONDecodeError as e:
-            return f"Invalid JSON on line {e.lineno}: {e.msg}"
+            return CheckResult(FAILED, f"invalid JSON on line {e.lineno}: {e.msg}")
+        return CheckResult(PASSED, "parsed as JSON")
 
-    language = TREE_SITTER_LANGUAGES.get(suffix) or TREE_SITTER_FILENAMES.get(name)
+    language = _tree_sitter_language(file.name)
     if language is None:
-        return f"no AST parser for this file type ({suffix or name}), so it can't be checked"
+        return CheckResult(ERROR, f"no syntax parser for this file type ({suffix or file.name})")
 
     from tree_sitter_language_pack import get_parser
 
     tree = get_parser(language).parse(code.encode("utf-8"))
     if tree.root_node.has_error:
-        return f"tree-sitter ({language}) found a syntax error"
-    return None
+        return CheckResult(FAILED, f"tree-sitter ({language}) found a syntax error")
+    return CheckResult(PASSED, f"parsed with tree-sitter ({language})")
 
 
-def _opengrep_findings(scan_dir: Path, rule_paths: list[Path]) -> list[str]:
-    """Run Opengrep on the folder holding only the fixed file. Returns `rule (line N)` for each hit."""
-    from report import normalize
+def _check_opengrep(file: Path, rule_paths: list[Path]) -> CheckResult:
     from runner import run_opengrep
 
-    hits = normalize(run_opengrep(scan_dir, rule_paths), scan_dir)
-    return sorted({f"{f.rule_id.split('.')[-1]} (line {f.start_line})" for f in hits})
+    if not rule_paths:
+        return CheckResult(ERROR, "no Opengrep rule paths given")
+
+    raw = run_opengrep(file, rule_paths)
+
+    # Rule load failures and files Opengrep couldn't fully parse show up here.
+    errors = raw.get("errors") or []
+    if errors:
+        first = errors[0]
+        detail = (first.get("message") or first.get("type")) if isinstance(first, dict) else first
+        return CheckResult(ERROR, f"Opengrep reported {len(errors)} error(s): {str(detail)[:300]}")
+
+    scanned = {Path(p).resolve() for p in raw.get("paths", {}).get("scanned", [])}
+    if file.resolve() not in scanned:
+        return CheckResult(ERROR, "Opengrep did not scan the file (no loaded rule applies to it)")
+
+    hits = sorted({f"{r['check_id'].split('.')[-1]} (line {r['start']['line']})" for r in raw.get("results", [])})
+    if hits:
+        return CheckResult(FAILED, "Opengrep findings: " + ", ".join(hits))
+    return CheckResult(PASSED, "no Opengrep findings")
 
 
-def _trufflehog_findings(scan_dir: Path) -> list[str]:
-    """Run TruffleHog on the folder holding only the fixed file. Returns `detector (line N)` for each hit.
-
-    Verification is off: anything that looks like a secret fails the patch, and the
-    candidate secret is never sent to the provider's API to be checked.
-    """
+def _check_trufflehog(file: Path) -> CheckResult:
     from trufflehog_runner import run_trufflehog
 
-    result = run_trufflehog(scan_dir, no_verification=True, timeout=300)
-    return sorted({f"{f.detector} (line {f.line if f.line is not None else '?'})" for f in result.findings})
+    # Verification is off: anything that looks like a secret fails the check, and the
+    # candidate secret is never sent to the provider's API.
+    result = run_trufflehog(file, no_verification=True, timeout=300)
+
+    if result.errors:
+        return CheckResult(ERROR, f"TruffleHog reported {len(result.errors)} error(s): {result.errors[0][:300]}")
+    if result.skipped_lines:
+        return CheckResult(ERROR, f"TruffleHog output had {result.skipped_lines} unreadable line(s)")
+
+    hits = sorted({f"{f.detector} (line {f.line if f.line is not None else '?'})" for f in result.findings})
+    if hits:
+        return CheckResult(FAILED, "TruffleHog found secrets: " + ", ".join(hits))
+    return CheckResult(PASSED, "no secrets found")
 
 
-def validate_patch(
-    relative_path: str,
-    original: str,
-    fixed: str,
-    findings: list[PromptFinding],
-    rule_paths: list[Path],
-) -> ValidationResult:
-    """Run every check on the patched file and reject it if any one fails.
-
-    Needs `opengrep` and `trufflehog` installed and Opengrep `rule_paths` to scan with.
-    """
-    result = ValidationResult()
-
-    if not fixed.strip():
-        result.reject("empty output")
-        return result
-    if fixed.strip() == original.strip():
-        result.reject("output is identical to the vulnerable file")
-        return result
-
-    if len(original) > 400 and len(fixed) < 0.5 * len(original):
-        result.reject(f"output is much shorter than input ({len(fixed)} vs {len(original)} chars), likely truncated")
-    for pattern in PLACEHOLDER_PATTERNS:
-        if re.search(pattern, fixed, re.IGNORECASE) and not re.search(pattern, original, re.IGNORECASE):
-            result.reject("output contains a placeholder instead of the full file")
-            break
-
-    invented = set(DIGEST_PATTERN.findall(fixed)) - set(DIGEST_PATTERN.findall(original))
-    if invented:
-        result.reject(f"output adds a hash the model can't know ({sorted(invented)[0][:20]}...), likely made up")
-
+def _run(check, *args) -> CheckResult:
     try:
-        error = _syntax_error(relative_path, fixed)
+        return check(*args)
     except Exception as e:
-        error = f"AST check could not run ({type(e).__name__}: {e})"
-    result.syntax = "failed" if error else "ok"
-    if error:
-        result.reject(error)
+        return CheckResult(ERROR, f"check could not run ({type(e).__name__}: {e})")
 
-    with tempfile.TemporaryDirectory() as tmp:
-        scan_dir = Path(tmp)
-        out_file = scan_dir / relative_path
-        out_file.parent.mkdir(parents=True, exist_ok=True)
-        out_file.write_text(fixed, encoding="utf-8")
 
-        try:
-            if not rule_paths:
-                raise ValueError("no Opengrep rule paths given")
-            remaining = _opengrep_findings(scan_dir, rule_paths)
-        except Exception as e:
-            remaining = None
-            result.reject(f"Opengrep scan could not run ({type(e).__name__}: {e})")
-        result.opengrep = "ok" if remaining == [] else "failed"
-        if remaining:
-            result.reject(f"Opengrep still reports: {', '.join(remaining)}")
+def validate_returned_file(relative_path: str, content: str, rule_paths: list[Path]) -> ValidationResult:
+    """Write `content` to a fresh temporary folder and run all three checks on that copy."""
+    with tempfile.TemporaryDirectory(prefix="vibecheck-gemini-") as tmp:
+        file = Path(tmp) / PurePosixPath(relative_path)
+        file.parent.mkdir(parents=True, exist_ok=True)
+        file.write_bytes(content.encode("utf-8"))  # bytes, so Windows doesn't rewrite line endings
 
-        try:
-            secrets = _trufflehog_findings(scan_dir)
-        except Exception as e:
-            secrets = None
-            result.reject(f"TruffleHog scan could not run ({type(e).__name__}: {e})")
-        result.trufflehog = "ok" if secrets == [] else "failed"
-        if secrets:
-            result.reject(f"TruffleHog still finds secrets: {', '.join(secrets)}")
-
-    return result
+        return ValidationResult(
+            ast=_run(_check_ast, file),
+            opengrep=_run(_check_opengrep, file, rule_paths),
+            trufflehog=_run(_check_trufflehog, file),
+        )

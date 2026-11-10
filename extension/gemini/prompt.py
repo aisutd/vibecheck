@@ -1,19 +1,13 @@
-"""Load scanner findings and build the repair prompt sent to Gemini.
-
-The prompt text matches dataset/sft_r3/prompt_template.txt character for character,
-so every (prompt, fixed file) pair Gemini produces can go straight into the SFT and
-DPO datasets that DeepSeek-Coder is trained on.
-"""
+"""Load scanner findings and build the repair prompt sent to Gemini."""
 
 import json
-from collections import defaultdict
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 
 
 @dataclass
 class PromptFinding:
-    tool: str  # "OpenGrep" or "TruffleHog", spelled the way the dataset spells them
+    tool: str  # "OpenGrep" or "TruffleHog"
     file: str  # path relative to the scanned folder, always with "/"
     line: int | None
     severity: str
@@ -37,8 +31,6 @@ REPAIR_INSTRUCTIONS = """REPAIR INSTRUCTIONS:
 4. Output ONLY the raw fixed file content. No markdown fences, no explanations.
 """
 
-TOOL_ORDER = {"OpenGrep": 0, "TruffleHog": 1}
-
 
 def _posix(path: str) -> str:
     return str(PurePosixPath(path.replace("\\", "/")))
@@ -47,8 +39,8 @@ def _posix(path: str) -> str:
 def load_opengrep(path: Path) -> list[PromptFinding]:
     """Read either our findings.json (from opengrep/report.py) or raw `opengrep scan --json` output.
 
-    Raw output keeps the full check_id (e.g. "python.flask.security.audit.debug-enabled..."),
-    which is what the training data uses. findings.json only keeps the last segment.
+    Raw output keeps the full check_id (e.g. "python.flask.security.audit.debug-enabled...");
+    findings.json only keeps the last segment.
     """
     data = json.loads(Path(path).read_text(encoding="utf-8"))
     findings = []
@@ -102,22 +94,6 @@ def load_trufflehog(path: Path) -> list[PromptFinding]:
     return findings
 
 
-def group_by_file(findings: list[PromptFinding]) -> dict[str, list[PromptFinding]]:
-    """Group findings per file, OpenGrep first, then by line. Exact duplicates are dropped."""
-    grouped = defaultdict(list)
-    seen = set()
-    for f in findings:
-        key = (f.tool, f.file, f.line, f.rule_id)
-        if key in seen:
-            continue
-        seen.add(key)
-        grouped[f.file].append(f)
-
-    for file_findings in grouped.values():
-        file_findings.sort(key=lambda f: (TOOL_ORDER.get(f.tool, 99), f.line or 0, f.rule_id))
-    return dict(sorted(grouped.items()))
-
-
 def _finding_block(f: PromptFinding) -> str:
     line = f.line if f.line is not None else "?"
     return (
@@ -128,7 +104,7 @@ def _finding_block(f: PromptFinding) -> str:
 
 
 def build_prompt(relative_path: str, file_content: str, findings: list[PromptFinding]) -> str:
-    """Build the user prompt for one file, in the exact format of the SFT dataset."""
+    """Build the prompt asking Gemini to return the whole fixed file."""
     relative_path = _posix(relative_path)
     return (
         HEADER

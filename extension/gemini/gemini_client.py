@@ -1,7 +1,6 @@
 """Thin wrapper around the Gemini API that turns a repair prompt into a fixed file."""
 
 import os
-import random
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -11,16 +10,12 @@ MODEL_ENV_VAR = "VIBECHECK_GEMINI_MODEL"
 
 # 429 = rate limited, 5xx = Google-side problems. Everything else (bad key, bad request) won't fix itself.
 RETRYABLE_STATUS = {408, 429, 500, 502, 503, 504}
-# If Google says to come back later than this, the quota is used up for the day, so stop instead of waiting.
+# If Google says to come back later than this, the quota is used up, so fail instead of waiting.
 MAX_RETRY_WAIT = 120
 
 
 class GeminiError(Exception):
     """Gemini could not be called, or its answer can't be used as a fixed file."""
-
-
-class QuotaExhaustedError(GeminiError):
-    """The API key has no quota left for this model. Every further call will fail too."""
 
 
 @dataclass
@@ -97,7 +92,7 @@ class GeminiClient:
         max_retries: int = 5,
         client=None,
     ):
-        """api_key falls back to GEMINI_API_KEY / GOOGLE_API_KEY. `client` lets tests pass a fake."""
+        """api_key falls back to GEMINI_API_KEY / GOOGLE_API_KEY. `client` replaces the google-genai client."""
         load_dotenv()
         self.model = model or os.environ.get(MODEL_ENV_VAR, DEFAULT_MODEL)
         self.temperature = temperature
@@ -145,14 +140,14 @@ class GeminiClient:
                 if getattr(e, "code", None) == 429 and (
                     (delay and delay > MAX_RETRY_WAIT) or "limit: 0" in str(e)
                 ):
-                    raise QuotaExhaustedError(
+                    raise GeminiError(
                         f"No Gemini quota left for {self.model} ({_short_error(e)}). "
                         "Try a model your key can use (e.g. --model gemini-3.5-flash) or enable billing."
                     ) from e
                 if not _is_retryable(e) or attempt == self.max_retries:
                     raise GeminiError(f"Gemini call failed ({_short_error(e)})") from e
-                # 2s, 4s, 8s, ... capped at 60s, plus jitter so parallel workers don't retry together.
-                time.sleep(max(delay or 0, min(60, 2 ** (attempt + 1))) + random.uniform(0, 1))
+                # 2s, 4s, 8s, ... capped at 60s.
+                time.sleep(max(delay or 0, min(60, 2 ** (attempt + 1))))
 
     def generate_fix(self, prompt: str) -> GeminiResult:
         """Send a repair prompt (see prompt.build_prompt) and return the fixed file."""
