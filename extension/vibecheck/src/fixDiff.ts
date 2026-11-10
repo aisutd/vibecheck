@@ -1,5 +1,5 @@
 import * as vscode from "vscode";
-
+import { appendFixSummary } from "./fixSummary";
 const SCHEME = "vibecheck-fixed";
 
 interface PendingFix {
@@ -25,8 +25,10 @@ class FixedContentProvider implements vscode.TextDocumentContentProvider {
 }
 
 let provider: FixedContentProvider;
+let extensionContext: vscode.ExtensionContext;
 
 export function registerFixDiff(context: vscode.ExtensionContext): void {
+  extensionContext = context;
   provider = new FixedContentProvider();
   context.subscriptions.push(
     vscode.workspace.registerTextDocumentContentProvider(SCHEME, provider),
@@ -95,6 +97,12 @@ async function acceptFix(): Promise<void> {
   await vscode.commands.executeCommand("workbench.action.closeActiveEditor");
   await vscode.window.showTextDocument(doc);
   vscode.window.showInformationMessage("Vibe Check fix applied. Undo with Cmd/Ctrl+Z, or save to keep it.");
+  try {
+    await appendFixSummary(extensionContext, fix.originalUri, fix.originalText, fix.fixedCode);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    vscode.window.showWarningMessage(`Fix applied, but the summary couldn't be updated: ${message}`);
+  }
 }
 
 async function rejectFix(): Promise<void> {
