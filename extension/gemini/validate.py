@@ -16,7 +16,7 @@ import json
 import shutil
 import sys
 import tempfile
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict, dataclass
 from pathlib import Path, PurePosixPath
 
 EXTENSION_DIR = Path(__file__).resolve().parent.parent
@@ -151,7 +151,7 @@ def _check_opengrep(file: Path, rule_paths: list[Path]) -> CheckResult:
 
     scanned = {Path(p).resolve() for p in raw.get("paths", {}).get("scanned", [])}
     if file.resolve() not in scanned:
-        return CheckResult(ERROR, "Opengrep did not scan the file (no loaded rule applies to it)")
+        return CheckResult(ERROR, "Opengrep skipped the file (no rule for its language, or too large)")
 
     hits = sorted({f"{r['check_id'].split('.')[-1]} (line {r['start']['line']})" for r in raw.get("results", [])})
     if hits:
