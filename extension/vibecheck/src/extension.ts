@@ -8,7 +8,7 @@ import { spawn } from 'node:child_process';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import { loadReports, type ScanSummary } from './reports';
-import {rmSync} from 'node:fs';
+import {rmSync, existsSync} from 'node:fs';
 
 // VS Code calls this method when the VibeCheck extension is activated
 export function activate(context: vscode.ExtensionContext) {
@@ -43,6 +43,17 @@ export function activate(context: vscode.ExtensionContext) {
 		})
 	);
 }
+// Whoich python to run. 
+function findPython(repoRoot: string): string {
+	const venvPython = process.platform === 'win32'
+		? path.join(repoRoot, '.venv', 'Scripts', 'python.exe')
+		: path.join(repoRoot, '.venv', 'bin', 'python');
+
+	if (existsSync(venvPython)) {
+		return venvPython;
+	}
+	return process.platform === 'win32' ? 'python' : 'python3';
+}
 
 // Runs the Gemini fix script on a file and opens the result in a diff view.
 async function fixFile(uri: vscode.Uri, extensionPath: string): Promise<void> {
@@ -56,7 +67,7 @@ async function fixFile(uri: vscode.Uri, extensionPath: string): Promise<void> {
 
 	// extension lives at <repo>/extension/vibecheck
 	const repoRoot = path.resolve(extensionPath, '..', '..');
-	const python = 'python';
+	const python = findPython(repoRoot);
 	const script = path.join(repoRoot, 'dataset', 'gemini', 'fix_and_diff.py');
 
 	await vscode.window.withProgress(
@@ -595,7 +606,7 @@ class VibeCheckSidebar implements vscode.WebviewViewProvider {
 								fixButton.textContent = 'Fix';
 								fixButton.setAttribute('aria-label', 'Fix ' + file.path);
 
-								// Ask the extension to fix this file (the extension handles it in step 4).
+								// Ask the extension to fix this file .
 								fixButton.addEventListener('click', () => {
 									vscode.postMessage({ command: 'fix', file: file.path });
 								});
@@ -667,6 +678,10 @@ class VibeCheckSidebar implements vscode.WebviewViewProvider {
 		console.log('Trufflehog runner:', trufflehogRunnerPath);
 
 		const outputPath = targetPath;
+		// Finding two levels up.
+		const python = findPython(path.resolve(this.extensionUri.fsPath, '..', '..'));
+
+
 
 		// Clearing older reports before starting scan runners.
 		try {
@@ -687,7 +702,7 @@ class VibeCheckSidebar implements vscode.WebviewViewProvider {
 		// Runs the Opengrep scanner script with the runner and target paths.
 		console.log('Opengrep scan in progress...');
 		const opengrepScanner = spawn(
-			'python',
+			python,
 			[opengrepRunnerPath, targetPath, '--out', outputPath],
 			{
 				cwd: targetPath,
@@ -704,7 +719,7 @@ class VibeCheckSidebar implements vscode.WebviewViewProvider {
 		// Runs the Trufflehog scanner script with the runner and target paths.
 		console.log('Trufflehog scan in progress...');
 		const trufflehogScanner = spawn(
-			'python',
+			python,
 			[trufflehogRunnerPath, targetPath, '--output', outputPath, '--no-verification'],
 			{
 				cwd: targetPath,
