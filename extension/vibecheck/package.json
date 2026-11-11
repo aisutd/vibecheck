@@ -14,24 +14,12 @@
   "contributes": {
     "commands": [
       {
-        "command": "vibecheck.helloWorld",
-        "title": "Hello World"
-      },
-      {
-        "command": "vibecheck.showStatus",
-        "title": "Show VibeCheck Status"
-      },
-      {
         "command": "vibecheck.scan",
-        "title": "Scan generated code for vulnerabilities"
+        "title": "VibeCheck: Scan codebase"
       },
       {
-        "command": "vibecheck.edit",
-        "title": "Edit generated code with proposed changes"
-      },
-        {
         "command": "vibecheck.acceptFix",
-        "title": "Vibe Check: Accept Fix",
+        "title": "VibeCheck: Accept fix",
         "icon": {
           "light": "media/accept-icon.svg",
           "dark": "media/accept-icon.svg"
@@ -39,7 +27,7 @@
       },
       {
         "command": "vibecheck.rejectFix",
-        "title": "Vibe Check: Reject Fix",
+        "title": "VibeCheck: Reject fix",
         "icon": {
           "light": "media/reject-icon.svg",
           "dark": "media/reject-icon.svg"
@@ -47,7 +35,7 @@
       },
       {
         "command": "vibecheck.fixCurrentFile",
-        "title": "Vibe Check: Fix Current File with Gemini"
+        "title": "VibeCheck: Fix current file with Gemini"
       }
     ],
     "menus": {
