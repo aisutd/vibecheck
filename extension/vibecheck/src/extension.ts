@@ -71,13 +71,24 @@ async function fixFile(uri: vscode.Uri, extensionPath: string): Promise<void> {
 	const script = path.join(repoRoot, 'dataset', 'gemini', 'fix_and_diff.py');
 
 	await vscode.window.withProgress(
-		{ location: vscode.ProgressLocation.Notification, title: `Vibe Check: asking Gemini to fix ${fileName}...` },
+		{ location: vscode.ProgressLocation.Notification, title: `Vibe Check: generating and validating a fix for ${fileName}...` },
 		() =>
 			new Promise<void>((resolve) => {
 				execFile(
 					python,
-					[script, uri.fsPath, '--stdout'],
-					{ cwd: repoRoot, timeout: 180_000, maxBuffer: 10 * 1024 * 1024 },
+					['-X', 'utf8', script, uri.fsPath, '--stdout'],
+					{
+						cwd: repoRoot,
+						timeout: 780_000, // Gemini plus up to 300 seconds per scanner.
+						maxBuffer: 10 * 1024 * 1024,
+						env: {
+							...process.env,
+							PATH: [
+								path.join(os.homedir(), '.opengrep', 'cli', 'latest'),
+								process.env.PATH ?? ''
+							].join(path.delimiter)
+						}
+					},
 					async (error, stdout, stderr) => {
 						if (error) {
 							vscode.window.showErrorMessage(`Vibe Check failed: ${stderr || error.message}`);
