@@ -8,7 +8,10 @@ import { spawn } from 'node:child_process';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import { loadReports, type ScanSummary } from './reports';
-import {rmSync, existsSync} from 'node:fs';
+import { registerScanFindings, writeScanFindings } from './scanFindings';
+import {rmSync} from 'node:fs';
+
+import { findPython } from './python';
 
 // VS Code calls this method when the VibeCheck extension is activated
 export function activate(context: vscode.ExtensionContext) {
@@ -32,6 +35,7 @@ export function activate(context: vscode.ExtensionContext) {
 	);
 	// Registering the fix diff provider
 	registerFixDiff(context);
+	registerScanFindings(context);
 		context.subscriptions.push(
 		vscode.commands.registerCommand('vibecheck.fixCurrentFile', async () => {
 			const editor = vscode.window.activeTextEditor;
@@ -42,17 +46,6 @@ export function activate(context: vscode.ExtensionContext) {
 			await fixFile(editor.document.uri, context.extensionPath);
 		})
 	);
-}
-// Whoich python to run. 
-function findPython(repoRoot: string): string {
-	const venvPython = process.platform === 'win32'
-		? path.join(repoRoot, '.venv', 'Scripts', 'python.exe')
-		: path.join(repoRoot, '.venv', 'bin', 'python');
-
-	if (existsSync(venvPython)) {
-		return venvPython;
-	}
-	return process.platform === 'win32' ? 'python' : 'python3';
 }
 
 // Runs the Gemini fix script on a file and opens the result in a diff view.
@@ -795,6 +788,12 @@ class VibeCheckSidebar implements vscode.WebviewViewProvider {
 				});
 
 				console.log('Combined scan results:', JSON.stringify(summary, null, 2));
+				try {
+					await writeScanFindings(outputPath);
+				} catch (error) {
+					const message = error instanceof Error ? error.message : String(error);
+					vscode.window.showWarningMessage(`Scan finished, but the findings file couldn't be written: ${message}`);
+				}
 			
 			} catch (error) {
 				const message = error instanceof Error

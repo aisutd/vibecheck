@@ -30,6 +30,18 @@ Rules:
 6. Add any imports your fix needs.
 7. Keep each function's behavior the same; only remove the vulnerability.
 """
+EXPLAIN_INSTRUCTION = """You explain security fixes to developers who may not know much about security. You respond in a clear and direct way.
+
+You will get a numbered list of code changes. For each change, write ONE plain English sentence
+(under 30 words) saying what was changed and why it makes the code safer.
+No markdown, no code. Return exactly one explanation per change, in the same order.
+"""
+
+EXPLAIN_SCHEMA = {
+    "type": "object",
+    "properties": {"explanations": {"type": "array", "items": {"type": "string"}}},
+    "required": ["explanations"],
+}
 
 MONACO_VERSION = "0.52.2"
 
@@ -118,6 +130,33 @@ def fix_code(old_code: str) -> str:
 
     return _strip_fences(text)
 
+def explain_changes(changes: list[dict]) -> list[str]:
+    """Ask Gemini for a one-sentence explanation of each change, in order."""
+    parts = []
+    for number, change in enumerate(changes, start=1):
+        parts.append(f"Change {number} (line {change.get('line')}):")
+        if change.get("finding"):
+            parts.append(f"Scanner finding: {change['finding']}")
+        parts.append("Removed:\n" + ("\n".join(change.get("removed", [])) or "(nothing)"))
+        parts.append("Added:\n" + ("\n".join(change.get("added", [])) or "(nothing)"))
+        parts.append("")
+
+    client = genai.Client()
+    try:
+        interaction = client.interactions.create(
+            model=MODEL,
+            system_instruction=EXPLAIN_INSTRUCTION,
+            input="\n".join(parts),
+            generation_config={"temperature": 0.2},
+            response_format={"type": "text", "mime_type": "application/json", "schema": EXPLAIN_SCHEMA},
+        )
+        explanations = json.loads(interaction.output_text)["explanations"]
+    except Exception as e:
+        raise FixError(f"Could not get explanations: {e}") from e
+
+    if len(explanations) != len(changes) or not all(isinstance(x, str) for x in explanations):
+        raise FixError("Gemini returned the wrong number of explanations.")
+    return [x.strip() for x in explanations]
 
 # The diff.
 
@@ -156,14 +195,30 @@ def show_in_browser(old_code: str, new_code: str, old_path: Path, fixed_path: Pa
     return html_path
 
 
-# Coomand line
+# Command line
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Fix a file with Gemini and show the diff.")
-    parser.add_argument("file", type=Path, help="Code file to fix")
+    parser.add_argument("file", type=Path, nargs="?", help="Code file to fix")
     parser.add_argument("--stdout", action="store_true",
                         help="Print only the fixed code (used by the extension)")
+    parser.add_argument("--explain", action="store_true",
+                        help="Read changes as JSON on stdin and print explanations as JSON, used by the extension")
     args = parser.parse_args()
+
+
+    # Explain mode.
+    if args.explain:
+        try:
+            changes = json.load(sys.stdin)["changes"]
+            print(json.dumps({"explanations": explain_changes(changes)}))
+        except (FixError, KeyError, json.JSONDecodeError) as e:
+            print(f"Explain failed: {e}", file=sys.stderr)
+            sys.exit(1)
+        sys.exit(0)
+
+    if args.file is None:
+        parser.error("a file is required unless --explain is used")
 
     old_path = args.file
     old_code = old_path.read_text()
