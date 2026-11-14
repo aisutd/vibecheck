@@ -8,28 +8,12 @@ import subprocess
 import sys
 import webbrowser
 from pathlib import Path
+import re
+from urllib.error import URLError
+from urllib.request import Request, urlopen
 
-from dotenv import load_dotenv
-from google import genai
 
-load_dotenv()
 
-# The model seeting.
-
-MODEL = "gemini-3.5-flash-lite"
-
-SYSTEM_INSTRUCTION = """You are a security engineer fixing vulnerabilities in code.
-
-Rules:
-1. Fix every security vulnerability in the code.
-2. Change ONLY the lines needed to fix them. Keep every other line exactly the same:
-   same names, same formatting, same comments, same order.
-3. Keep the same programming language.
-4. Do not refactor, add features, or add comments explaining your changes.
-5. Return ONLY the complete fixed code. No markdown fences, no explanation before or after.
-6. Add any imports your fix needs.
-7. Keep each function's behavior the same; only remove the vulnerability.
-"""
 
 MONACO_VERSION = "0.52.2"
 
@@ -86,37 +70,89 @@ class FixError(Exception):
     """Raised when the model can't produce a fix."""
 
 
-# First the gemini new code.
+REPO_ROOT = Path(__file__).resolve().parents[2]
+RULES = REPO_ROOT / "rules" / "rules.yaml"
+
+sys.path.insert(0, str(REPO_ROOT / "extension" / "opengrep"))
+from runner import OpengrepError, run_opengrep
+
 
 def _strip_fences(text: str) -> str:
-    """Remove ``` markdown fences if the model added them."""
-    lines = text.strip().splitlines()
-    if lines and lines[0].startswith("```"):
-        lines = lines[1:]
-    if lines and lines[-1].strip().startswith("```"):
-        lines = lines[:-1]
-    return "\n".join(lines) + "\n"
+    match = re.fullmatch(r"\s*```[^\r\n`]*\r?\n(.*?)\r?\n```[ \t]*\s*", text, re.S)
+    return match.group(1) + "\n" if match else text
 
 
-def fix_code(old_code: str) -> str:
-    """Send old code to Gemini and return the fixed version."""
-    client = genai.Client()
-
+def fix_code(old_path: Path, old_code: str) -> str:
+    """Scan the original file and ask the local model for a repair."""
+    old_path = old_path.resolve()
     try:
-        interaction = client.interactions.create(
-            model=MODEL,
-            system_instruction=SYSTEM_INSTRUCTION,
-            input=old_code,
-            generation_config={"temperature": 0.2},
+        scan = run_opengrep(old_path, [RULES])
+    except OpengrepError as exc:
+        raise FixError(str(exc)) from exc
+
+    if scan.get("errors"):
+        raise FixError("OpenGrep reported scan errors. Check the scanner and rules.")
+
+    findings = []
+    for hit in scan.get("results", []):
+        details = hit["extra"]
+        findings.append(
+            "=== OpenGrep Security Findings ===\n"
+            f"- [{details['severity'].upper()}] Rule: {hit['check_id']}\n"
+            f"  Line {hit['start']['line']}: {details['message']}"
         )
-    except Exception as e:
-        raise FixError(f"Gemini request failed: {e}") from e
+    if not findings:
+        raise FixError("OpenGrep found no issues to include in the repair prompt.")
 
-    text = interaction.output_text
-    if not text or not text.strip():
-        raise FixError("Gemini returned an empty response.")
+    relative_path = (
+        old_path.relative_to(REPO_ROOT).as_posix()
+        if old_path.is_relative_to(REPO_ROOT)
+        else old_path.name
+    )
+    findings_text = "\n".join(findings)
+    prompt = f"""You are an expert security engineer. Fix all security vulnerabilities and hardcoded secrets in the code below.
 
-    return _strip_fences(text)
+FILE PATH: {relative_path}
+FILE NAME: {old_path.name}
+
+SECURITY ISSUES TO FIX:
+{findings_text}
+REPAIR INSTRUCTIONS:
+1. Fix ALL listed security issues while maintaining 100% syntactically correct code.
+2. For hardcoded secrets/credentials/tokens/keys, replace with environment variable references:
+   - Python: os.environ.get("VAR_NAME") or os.getenv("VAR_NAME")
+   - JavaScript/Node: process.env.VAR_NAME
+   - YAML/Docker: ${{VAR_NAME}}
+   - Dockerfile: add RUN useradd/adduser before USER directive
+3. Do NOT refactor or change unrelated code.
+4. Output ONLY the raw fixed file content. No markdown fences, no explanations.
+
+FILE CONTENT:
+{old_code}"""
+
+    request = Request(
+        "http://localhost:11434/api/chat",
+        data=json.dumps({
+            "model": "vibecheck",
+            "stream": False,
+            "messages": [{"role": "user", "content": prompt}],
+            "options": {"temperature": 0.0},
+        }).encode("utf-8"),
+        headers={"Content-Type": "application/json"},
+        method="POST",
+    )
+    try:
+        with urlopen(request, timeout=180) as response:
+            result = json.load(response)
+        text = _strip_fences(result["message"]["content"])
+    except (URLError, TimeoutError, ValueError, KeyError, TypeError) as exc:
+        raise FixError(f"Local Ollama request failed: {exc}") from exc
+
+    if result.get("done_reason") == "length":
+        raise FixError("Ollama reached its output limit before finishing the repair.")
+    if not text.strip():
+        raise FixError("Ollama returned an empty repair.")
+    return text
 
 
 # The diff.
@@ -159,18 +195,20 @@ def show_in_browser(old_code: str, new_code: str, old_path: Path, fixed_path: Pa
 # Coomand line
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Fix a file with Gemini and show the diff.")
+    parser = argparse.ArgumentParser(description="Fix a file with local Ollama and show the diff.")
     parser.add_argument("file", type=Path, help="Code file to fix")
-    parser.add_argument("--stdout", action="store_true",
-                        help="Print only the fixed code (used by the extension)")
+    parser.add_argument(
+        "--stdout", action="store_true",
+        help="Print only the fixed code (used by the extension)",
+    )
     args = parser.parse_args()
 
     old_path = args.file
     old_code = old_path.read_text()
 
-    print("Asking Gemini for a fix... (this can take a minute)", file=sys.stderr)
+    print("Asking local Ollama for a fix...", file=sys.stderr)
     try:
-        new_code = fix_code(old_code)
+        new_code = fix_code(old_path, old_code)
     except FixError as e:
         print(f"Fix failed: {e}", file=sys.stderr)
         sys.exit(1)
