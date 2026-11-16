@@ -1,5 +1,3 @@
-
-
 import argparse
 import html
 import json
@@ -97,7 +95,6 @@ def fix_code(old_path: Path, old_code: str) -> str:
     for hit in scan.get("results", []):
         details = hit["extra"]
         findings.append(
-            "=== OpenGrep Security Findings ===\n"
             f"- [{details['severity'].upper()}] Rule: {hit['check_id']}\n"
             f"  Line {hit['start']['line']}: {details['message']}"
         )
@@ -116,6 +113,7 @@ FILE PATH: {relative_path}
 FILE NAME: {old_path.name}
 
 SECURITY ISSUES TO FIX:
+=== OpenGrep Security Findings ===
 {findings_text}
 REPAIR INSTRUCTIONS:
 1. Fix ALL listed security issues while maintaining 100% syntactically correct code.
@@ -136,7 +134,7 @@ FILE CONTENT:
             "model": "vibecheck",
             "stream": False,
             "messages": [{"role": "user", "content": prompt}],
-            "options": {"temperature": 0.0},
+            "options": {"temperature": 0.0, "num_ctx": 4096},
         }).encode("utf-8"),
         headers={"Content-Type": "application/json"},
         method="POST",
@@ -204,7 +202,7 @@ if __name__ == "__main__":
     args = parser.parse_args()
 
     old_path = args.file
-    old_code = old_path.read_text()
+    old_code = old_path.read_text(encoding="utf-8").replace("\r\n", "\n")
 
     print("Asking local Ollama for a fix...", file=sys.stderr)
     try:
