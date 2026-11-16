@@ -1,7 +1,7 @@
 import json
 from pathlib import Path
 
-DATA_DIR = Path(__file__).resolve().parent.parent / "dataset" / "sft_r3"
+DATA_DIR = Path(__file__).resolve().parent.parent / "dataset" / "sft_v1"
 TRAIN_PATH = DATA_DIR / "sft_train.jsonl"
 VAL_PATH = DATA_DIR / "sft_val.jsonl"
 

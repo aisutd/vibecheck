@@ -1,17 +1,27 @@
 import argparse
 import html
 import json
+import re
 import shutil
 import subprocess
 import sys
 import webbrowser
 from pathlib import Path
-import re
 from urllib.error import URLError
 from urllib.request import Request, urlopen
 
+EXPLAIN_INSTRUCTION = """You explain security fixes to developers who may not know much about security. You respond in a clear and direct way.
 
+You will get a numbered list of code changes. For each change, write ONE plain English sentence
+(under 30 words) saying what was changed and why it makes the code safer.
+No markdown, no code. Return exactly one explanation per change, in the same order.
+"""
 
+EXPLAIN_SCHEMA = {
+    "type": "object",
+    "properties": {"explanations": {"type": "array", "items": {"type": "string"}}},
+    "required": ["explanations"],
+}
 
 MONACO_VERSION = "0.52.2"
 
@@ -153,6 +163,44 @@ FILE CONTENT:
     return text
 
 
+def explain_changes(changes: list[dict]) -> list[str]:
+    """Ask local Ollama for a one-sentence explanation of each change, in order."""
+    parts = []
+    for number, change in enumerate(changes, start=1):
+        parts.append(f"Change {number} (line {change.get('line')}):")
+        if change.get("finding"):
+            parts.append(f"Scanner finding: {change['finding']}")
+        parts.append("Removed:\n" + ("\n".join(change.get("removed", [])) or "(nothing)"))
+        parts.append("Added:\n" + ("\n".join(change.get("added", [])) or "(nothing)"))
+        parts.append("")
+
+    request = Request(
+        "http://localhost:11434/api/chat",
+        data=json.dumps({
+            "model": "vibecheck",
+            "stream": False,
+            "messages": [
+                {"role": "system", "content": EXPLAIN_INSTRUCTION},
+                {"role": "user", "content": "\n".join(parts)},
+            ],
+            "format": EXPLAIN_SCHEMA,
+            "options": {"temperature": 0.2, "num_ctx": 4096},
+        }).encode("utf-8"),
+        headers={"Content-Type": "application/json"},
+        method="POST",
+    )
+    try:
+        with urlopen(request, timeout=180) as response:
+            result = json.load(response)
+        explanations = json.loads(result["message"]["content"])["explanations"]
+    except Exception as e:
+        raise FixError(f"Could not get explanations: {e}") from e
+
+    if len(explanations) != len(changes) or not all(isinstance(x, str) for x in explanations):
+        raise FixError("Local Ollama returned the wrong number of explanations.")
+    return [x.strip() for x in explanations]
+
+
 # The diff.
 
 def show_in_vscode(old_path: Path, fixed_path: Path) -> bool:
@@ -190,16 +238,33 @@ def show_in_browser(old_code: str, new_code: str, old_path: Path, fixed_path: Pa
     return html_path
 
 
-# Coomand line
+# Command line
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Fix a file with local Ollama and show the diff.")
-    parser.add_argument("file", type=Path, help="Code file to fix")
+    parser.add_argument("file", type=Path, nargs="?", help="Code file to fix")
     parser.add_argument(
         "--stdout", action="store_true",
         help="Print only the fixed code (used by the extension)",
     )
+    parser.add_argument(
+        "--explain", action="store_true",
+        help="Read changes as JSON on stdin and print explanations as JSON, used by the extension",
+    )
     args = parser.parse_args()
+
+    # Explain mode.
+    if args.explain:
+        try:
+            changes = json.load(sys.stdin)["changes"]
+            print(json.dumps({"explanations": explain_changes(changes)}))
+        except (FixError, KeyError, json.JSONDecodeError) as e:
+            print(f"Explain failed: {e}", file=sys.stderr)
+            sys.exit(1)
+        sys.exit(0)
+
+    if args.file is None:
+        parser.error("a file is required unless --explain is used")
 
     old_path = args.file
     old_code = old_path.read_text(encoding="utf-8").replace("\r\n", "\n")
@@ -216,7 +281,7 @@ if __name__ == "__main__":
         sys.stdout.write(new_code)
         sys.exit(0)
 
-    #  save the fix and open a diff 
+    # save the fix and open a diff
     if new_code == old_code:
         print("No changes: the model returned identical code.")
         sys.exit(0)
