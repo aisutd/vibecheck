@@ -47,7 +47,7 @@
       },
       {
         "command": "vibecheck.fixCurrentFile",
-        "title": "Vibe Check: Fix Current File with Gemini"
+        "title": "Vibe Check: Fix Current File with Local Ollama"
       }
     ],
     "menus": {
