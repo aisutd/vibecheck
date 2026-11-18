@@ -4,15 +4,10 @@ import * as vscode from 'vscode';
 import * as path from 'node:path';
 import { writeFile } from 'node:fs/promises';
 import { isObject, readFindings, firstSentence } from './fixSummary';
+import { ensureReportsFolder } from './reportsFolder';
 
 const FINDINGS_FILE = 'scan-findings.md';
 
-let extensionContext: vscode.ExtensionContext;
-
-// Saves the extension context so the findings file can be stored in the extension's private storage.
-export function registerScanFindings(context: vscode.ExtensionContext): void {
-	extensionContext = context;
-}
 
 
 interface FindingLine {
@@ -72,9 +67,8 @@ export async function writeScanFindings(projectRoot: string): Promise<void> {
 	}
 
 
-	const storageUri = extensionContext.storageUri ?? extensionContext.globalStorageUri;
-	await vscode.workspace.fs.createDirectory(storageUri);
-	const findingsPath = path.join(storageUri.fsPath, FINDINGS_FILE);
+
+		const findingsPath = path.join(await ensureReportsFolder(projectRoot), FINDINGS_FILE);
 
 	// Rewritten on every scan.
 	await writeFile(findingsPath, lines.join('\n'), 'utf8');

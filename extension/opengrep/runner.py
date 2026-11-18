@@ -6,7 +6,7 @@ import os
 import sys
 
 # Folders that are not the user's own code.
-SKIP_DIRS = {"node_modules", ".venv", "venv", ".git", "dist", "build", "__pycache__"}
+SKIP_DIRS = {"node_modules", ".venv", "venv", ".git", "dist", "build", "__pycache__", "vibecheck-reports"}
 
 # Scan reports written into the project; scanning them is wasted work.
 SKIP_FILES = {"findings.json", "trufflehog_report.json"}
