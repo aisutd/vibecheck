@@ -1,35 +1,27 @@
-
-
 import argparse
 import html
 import json
+import re
 import shutil
 import subprocess
 import sys
 import webbrowser
 from pathlib import Path
+from urllib.error import URLError
+from urllib.request import Request, urlopen
 
-from dotenv import load_dotenv
-from google import genai
+EXPLAIN_INSTRUCTION = """You explain security fixes to developers who may not know much about security. You respond in a clear and direct way.
 
-load_dotenv()
-
-# The model seeting.
-
-MODEL = "gemini-3.5-flash-lite"
-
-SYSTEM_INSTRUCTION = """You are a security engineer fixing vulnerabilities in code.
-
-Rules:
-1. Fix every security vulnerability in the code.
-2. Change ONLY the lines needed to fix them. Keep every other line exactly the same:
-   same names, same formatting, same comments, same order.
-3. Keep the same programming language.
-4. Do not refactor, add features, or add comments explaining your changes.
-5. Return ONLY the complete fixed code. No markdown fences, no explanation before or after.
-6. Add any imports your fix needs.
-7. Keep each function's behavior the same; only remove the vulnerability.
+You will get a numbered list of code changes. For each change, write ONE plain English sentence
+(under 30 words) saying what was changed and why it makes the code safer.
+No markdown, no code. Return exactly one explanation per change, in the same order.
 """
+
+EXPLAIN_SCHEMA = {
+    "type": "object",
+    "properties": {"explanations": {"type": "array", "items": {"type": "string"}}},
+    "required": ["explanations"],
+}
 
 MONACO_VERSION = "0.52.2"
 
@@ -86,37 +78,148 @@ class FixError(Exception):
     """Raised when the model can't produce a fix."""
 
 
-# First the gemini new code.
+REPO_ROOT = Path(__file__).resolve().parents[2]
+RULES = REPO_ROOT / "rules" / "rules.yaml"
+
+sys.path.insert(0, str(REPO_ROOT / "extension" / "opengrep"))
+from runner import OpengrepError, run_opengrep
+
 
 def _strip_fences(text: str) -> str:
-    """Remove ``` markdown fences if the model added them."""
-    lines = text.strip().splitlines()
-    if lines and lines[0].startswith("```"):
-        lines = lines[1:]
-    if lines and lines[-1].strip().startswith("```"):
-        lines = lines[:-1]
-    return "\n".join(lines) + "\n"
+    match = re.fullmatch(r"\s*```[^\r\n`]*\r?\n(.*?)\r?\n```[ \t]*\s*", text, re.S)
+    return match.group(1) + "\n" if match else text
 
-
-def fix_code(old_code: str) -> str:
-    """Send old code to Gemini and return the fixed version."""
-    client = genai.Client()
+def _findings_from_reports(old_path: Path, reports_dir: Path) -> list[str] | None:
+    """This file's findings from the reports the Scan button wrote, or None if there are no reports."""
+    opengrep_report = reports_dir / "findings.json"
+    secrets_report = reports_dir / "trufflehog_report.json"
+    if not opengrep_report.exists() and not secrets_report.exists():
+        return None
 
     try:
-        interaction = client.interactions.create(
-            model=MODEL,
-            system_instruction=SYSTEM_INSTRUCTION,
-            input=old_code,
-            generation_config={"temperature": 0.2},
-        )
+        relative = old_path.relative_to(reports_dir.resolve()).as_posix()
+    except ValueError:
+        return None 
+
+    findings = []
+    if opengrep_report.exists():
+        data = json.loads(opengrep_report.read_text(encoding="utf-8"))
+        for f in data.get("findings", []):
+            if Path(f.get("file", "")).as_posix() == relative:
+                findings.append(
+                    f"- [{str(f.get('severity', '')).upper()}] Rule: {f.get('rule_id')}\n"
+                    f"  Line {f.get('start_line')}: {f.get('message')}"
+                )
+
+    
+    if secrets_report.exists():
+        data = json.loads(secrets_report.read_text(encoding="utf-8"))
+        for f in data.get("findings", []):
+            if Path(f.get("file", "")).as_posix() == relative:
+                findings.append(
+                    f"- [SECRET] Detector: {f.get('detector')}\n"
+                    f"  Line {f.get('line')}: hardcoded {f.get('detector')} secret; replace it with an environment variable"
+                )
+    return findings
+
+def fix_code(old_path: Path, old_code: str, reports_dir: Path | None = None) -> str:
+    """Ask the local model to repair the file, using the findings the scan already produced."""
+    old_path = old_path.resolve()
+
+    findings = _findings_from_reports(old_path, reports_dir) if reports_dir else None
+    if findings is None:
+        raise FixError("No scan results found. Run a scan first, then click Fix.")
+    if not findings:
+        raise FixError("No issues were found in this file to fix.")
+
+    relative_path = (
+        old_path.relative_to(REPO_ROOT).as_posix()
+        if old_path.is_relative_to(REPO_ROOT)
+        else old_path.name
+    )
+    findings_text = "\n".join(findings)
+    prompt = f"""You are an expert security engineer. Fix all security vulnerabilities and hardcoded secrets in the code below.
+
+FILE PATH: {relative_path}
+FILE NAME: {old_path.name}
+
+SECURITY ISSUES TO FIX:
+=== OpenGrep Security Findings ===
+{findings_text}
+REPAIR INSTRUCTIONS:
+1. Fix ALL listed security issues while maintaining 100% syntactically correct code.
+2. For hardcoded secrets/credentials/tokens/keys, replace with environment variable references:
+   - Python: os.environ.get("VAR_NAME") or os.getenv("VAR_NAME")
+   - JavaScript/Node: process.env.VAR_NAME
+   - YAML/Docker: ${{VAR_NAME}}
+   - Dockerfile: add RUN useradd/adduser before USER directive
+3. Do NOT refactor or change unrelated code.
+4. Output ONLY the raw fixed file content. No markdown fences, no explanations.
+
+FILE CONTENT:
+{old_code}"""
+
+    request = Request(
+        "http://localhost:11434/api/chat",
+        data=json.dumps({
+            "model": "vibecheck",
+            "stream": False,
+            "messages": [{"role": "user", "content": prompt}],
+            "options": {"temperature": 0.0, "num_ctx": 4096},
+        }).encode("utf-8"),
+        headers={"Content-Type": "application/json"},
+        method="POST",
+    )
+    try:
+        with urlopen(request, timeout=180) as response:
+            result = json.load(response)
+        text = _strip_fences(result["message"]["content"])
+    except (URLError, TimeoutError, ValueError, KeyError, TypeError) as exc:
+        raise FixError(f"Local Ollama request failed: {exc}") from exc
+
+    if result.get("done_reason") == "length":
+        raise FixError("Ollama reached its output limit before finishing the repair.")
+    if not text.strip():
+        raise FixError("Ollama returned an empty repair.")
+    return text
+
+
+def explain_changes(changes: list[dict]) -> list[str]:
+    """Ask local Ollama for a one-sentence explanation of each change, in order."""
+    parts = []
+    for number, change in enumerate(changes, start=1):
+        parts.append(f"Change {number} (line {change.get('line')}):")
+        if change.get("finding"):
+            parts.append(f"Scanner finding: {change['finding']}")
+        parts.append("Removed:\n" + ("\n".join(change.get("removed", [])) or "(nothing)"))
+        parts.append("Added:\n" + ("\n".join(change.get("added", [])) or "(nothing)"))
+        parts.append("")
+
+    request = Request(
+        "http://localhost:11434/api/chat",
+        data=json.dumps({
+            "model": "vibecheck",
+            "stream": False,
+            "messages": [
+                {"role": "system", "content": EXPLAIN_INSTRUCTION},
+                {"role": "user", "content": "\n".join(parts)},
+            ],
+            "format": EXPLAIN_SCHEMA,
+            "options": {"temperature": 0.2, "num_ctx": 4096},
+        }).encode("utf-8"),
+        headers={"Content-Type": "application/json"},
+        method="POST",
+    )
+    try:
+        with urlopen(request, timeout=180) as response:
+            result = json.load(response)
+        explanations = json.loads(result["message"]["content"])["explanations"]
     except Exception as e:
-        raise FixError(f"Gemini request failed: {e}") from e
+        raise FixError(f"Could not get explanations: {e}") from e
 
-    text = interaction.output_text
-    if not text or not text.strip():
-        raise FixError("Gemini returned an empty response.")
-
-    return _strip_fences(text)
+    if len(explanations) != len(changes) or not all(isinstance(x, str) for x in explanations):
+        raise FixError("Local Ollama returned the wrong number of explanations.")
+    return [x.strip() for x in explanations]
 
 
 # The diff.
@@ -156,21 +259,42 @@ def show_in_browser(old_code: str, new_code: str, old_path: Path, fixed_path: Pa
     return html_path
 
 
-# Coomand line
+# Command line
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Fix a file with Gemini and show the diff.")
-    parser.add_argument("file", type=Path, help="Code file to fix")
-    parser.add_argument("--stdout", action="store_true",
-                        help="Print only the fixed code (used by the extension)")
+    parser = argparse.ArgumentParser(description="Fix a file with local Ollama and show the diff.")
+    parser.add_argument("file", type=Path, nargs="?", help="Code file to fix")
+    parser.add_argument(
+        "--stdout", action="store_true",
+        help="Print only the fixed code (used by the extension)",
+    )
+    parser.add_argument(
+        "--explain", action="store_true",
+        help="Read changes as JSON on stdin and print explanations as JSON, used by the extension",
+    )
+    parser.add_argument("--reports-dir", type=Path,
+                        help="Project folder containing findings.json and trufflehog_report.json from the last scan")
     args = parser.parse_args()
 
-    old_path = args.file
-    old_code = old_path.read_text()
+    # Explain mode.
+    if args.explain:
+        try:
+            changes = json.load(sys.stdin)["changes"]
+            print(json.dumps({"explanations": explain_changes(changes)}))
+        except (FixError, KeyError, json.JSONDecodeError) as e:
+            print(f"Explain failed: {e}", file=sys.stderr)
+            sys.exit(1)
+        sys.exit(0)
 
-    print("Asking Gemini for a fix... (this can take a minute)", file=sys.stderr)
+    if args.file is None:
+        parser.error("a file is required unless --explain is used")
+
+    old_path = args.file
+    old_code = old_path.read_text(encoding="utf-8").replace("\r\n", "\n")
+
+    print("Asking local Ollama for a fix...", file=sys.stderr)
     try:
-        new_code = fix_code(old_code)
+        new_code = fix_code(old_path, old_code, args.reports_dir)
     except FixError as e:
         print(f"Fix failed: {e}", file=sys.stderr)
         sys.exit(1)
@@ -180,7 +304,7 @@ if __name__ == "__main__":
         sys.stdout.write(new_code)
         sys.exit(0)
 
-    #  save the fix and open a diff 
+    # save the fix and open a diff
     if new_code == old_code:
         print("No changes: the model returned identical code.")
         sys.exit(0)

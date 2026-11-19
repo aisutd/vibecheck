@@ -1,4 +1,4 @@
-"""Harness Piece A: greedy baseline or adapter generation. Requires a CUDA GPU.
+"""Harness Piece A: baseline or adapter generation. Requires a CUDA GPU.
 
 Run from the repository root:
   python eval/generate.py --data dataset/sft_r3/sft_val.jsonl --out eval/outputs/base_outputs.jsonl
@@ -13,9 +13,21 @@ from pathlib import Path
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--adapter', help='Extracted adapter folder; omit for baseline')
-    parser.add_argument('--data', type=Path, required=True, help='Validation JSONL')
+    parser.add_argument('--data', type=Path, required=True, help='Input dataset JSONL')
     parser.add_argument('--out', type=Path, required=True, help='JSONL path in eval/outputs/')
+    parser.add_argument('--num-samples', type=int, default=1)
+    parser.add_argument('--temperature', type=float, default=0.0)
+    parser.add_argument('--start', type=int, default=0, help='First row index, inclusive')
+    parser.add_argument('--end', type=int, help='Last row boundary, exclusive; defaults to dataset size')
     args = parser.parse_args()
+    if args.num_samples < 1:
+        parser.error('--num-samples must be at least 1')
+    if not math.isfinite(args.temperature) or args.temperature < 0:
+        parser.error('--temperature must be finite and nonnegative')
+
+    generation_options = {'do_sample': args.temperature > 0}
+    if args.temperature > 0:
+        generation_options['temperature'] = args.temperature
 
     # Resolve outputs relative to the repository, even if run from another folder.
     repo_root = Path(__file__).resolve().parent.parent
@@ -30,8 +42,12 @@ def main():
     with data_path.open(encoding='utf-8') as source:
         rows = [json.loads(line) for line in source if line.strip()]
     if not rows:
-        parser.error('Validation data is empty')
-    for i, row in enumerate(rows):
+        parser.error('Input dataset is empty')
+    end = len(rows) if args.end is None else args.end
+    if not 0 <= args.start < end <= len(rows):
+        parser.error(f'Require 0 <= --start < --end <= {len(rows)}')
+    selected_rows = rows[args.start:end]
+    for i, row in enumerate(selected_rows, start=args.start):
         messages = row['messages']
         if len(messages) < 2 or messages[-1]['role'] != 'assistant':
             parser.error(f'Row {i} must end with a reference assistant answer')
@@ -70,7 +86,7 @@ def main():
 
     # Hide the reference answer; preserve the raw generated text.
     with out_path.open('x', encoding='utf-8') as destination:
-        for i, row in enumerate(rows):
+        for i, row in enumerate(selected_rows, start=args.start):
             prompt_messages = row['messages'][:-1]
             original_file = prompt_messages[-1]['content'].split('FILE CONTENT:\n', 1)[1]
             original_tokens = len(tokenizer.encode(original_file, add_special_tokens=False))
@@ -82,18 +98,22 @@ def main():
                 return_dict=True,
                 return_tensors='pt',
             ).to('cuda')
-            with torch.inference_mode(), torch.autocast('cuda', dtype=torch.float16):
-                output = model.generate(
-                    **inputs,
-                    do_sample=False,
-                    max_new_tokens=budget,
-                    pad_token_id=tokenizer.eos_token_id,
-                )
-            answer_ids = output[0, inputs['input_ids'].shape[1]:]
-            answer = tokenizer.decode(answer_ids, skip_special_tokens=True)
-            destination.write(json.dumps({'index': i, 'output': answer}) + '\n')
-            destination.flush()
-            print(f'Completed {i + 1}/{len(rows)}', flush=True)
+            for sample_id in range(args.num_samples):
+                with torch.inference_mode(), torch.autocast('cuda', dtype=torch.float16):
+                    output = model.generate(
+                        **inputs,
+                        **generation_options,
+                        max_new_tokens=budget,
+                        pad_token_id=tokenizer.eos_token_id,
+                    )
+                answer_ids = output[0, inputs['input_ids'].shape[1]:]
+                answer = tokenizer.decode(answer_ids, skip_special_tokens=True)
+                record = {'index': i, 'output': answer}
+                if args.num_samples > 1:
+                    record['sample_id'] = sample_id
+                destination.write(json.dumps(record) + '\n')
+                destination.flush()
+            print(f'Completed {i - args.start + 1}/{len(selected_rows)}', flush=True)
     print(f'Saved outputs to: {out_path}')
 
 

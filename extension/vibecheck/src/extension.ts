@@ -8,7 +8,10 @@ import { spawn } from 'node:child_process';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import { loadReports, type ScanSummary } from './reports';
+import { writeScanFindings } from './scanFindings';
 import {rmSync} from 'node:fs';
+
+import { findPython } from './python';
 
 // VS Code calls this method when the VibeCheck extension is activated
 export function activate(context: vscode.ExtensionContext) {
@@ -52,17 +55,35 @@ async function fixFile(uri: vscode.Uri, extensionPath: string): Promise<void> {
 
 	// extension lives at <repo>/extension/vibecheck
 	const repoRoot = path.resolve(extensionPath, '..', '..');
-	const python = 'python3';
+	const python = findPython(repoRoot);
 	const script = path.join(repoRoot, 'dataset', 'gemini', 'fix_and_diff.py');
 
+	// The scan writes its reports into the project folder; pass it so the fix reuses those findings.
+	const projectRoot = vscode.workspace.getWorkspaceFolder(uri)?.uri.fsPath;
+	const scriptArgs = ['-X', 'utf8', script, uri.fsPath, '--stdout'];
+	if (projectRoot) {
+		scriptArgs.push('--reports-dir', projectRoot);
+	}
+
 	await vscode.window.withProgress(
-		{ location: vscode.ProgressLocation.Notification, title: `VibeCheck: asking Gemini to fix ${fileName}...` },
+		{ location: vscode.ProgressLocation.Notification, title: `VibeCheck: generating and validating a fix for ${fileName}...` },
 		() =>
 			new Promise<void>((resolve) => {
 				execFile(
 					python,
-					[script, uri.fsPath, '--stdout'],
-					{ cwd: repoRoot, timeout: 180_000, maxBuffer: 10 * 1024 * 1024 },
+						scriptArgs,
+					{
+						cwd: repoRoot,
+						timeout: 780_000, // Gemini plus up to 300 seconds per scanner.
+						maxBuffer: 10 * 1024 * 1024,
+						env: {
+							...process.env,
+							PATH: [
+								path.join(os.homedir(), '.opengrep', 'cli', 'latest'),
+								process.env.PATH ?? ''
+							].join(path.delimiter)
+						}
+					},
 					async (error, stdout, stderr) => {
 						if (error) {
 							vscode.window.showErrorMessage(`VibeCheck failed: ${stderr || error.message}`);
@@ -571,7 +592,7 @@ class VibeCheckSidebar implements vscode.WebviewViewProvider {
 								fixButton.textContent = 'Fix';
 								fixButton.setAttribute('aria-label', 'Fix ' + file.path);
 
-								// Ask the extension to fix this file (the extension handles it in step 4).
+								// Ask the extension to fix this file .
 								fixButton.addEventListener('click', () => {
 									vscode.postMessage({ command: 'fix', file: file.path });
 								});
@@ -643,6 +664,10 @@ class VibeCheckSidebar implements vscode.WebviewViewProvider {
 		console.log('Trufflehog runner:', trufflehogRunnerPath);
 
 		const outputPath = targetPath;
+		// Finding two levels up.
+		const python = findPython(path.resolve(this.extensionUri.fsPath, '..', '..'));
+
+
 
 		// Clearing older reports before starting scan runners.
 		try {
@@ -663,7 +688,7 @@ class VibeCheckSidebar implements vscode.WebviewViewProvider {
 		// Runs the Opengrep scanner script with the runner and target paths.
 		console.log('Opengrep scan in progress...');
 		const opengrepScanner = spawn(
-			'python3',
+			python,
 			[opengrepRunnerPath, targetPath, '--out', outputPath],
 			{
 				cwd: targetPath,
@@ -680,7 +705,7 @@ class VibeCheckSidebar implements vscode.WebviewViewProvider {
 		// Runs the Trufflehog scanner script with the runner and target paths.
 		console.log('Trufflehog scan in progress...');
 		const trufflehogScanner = spawn(
-			'python3',
+			python,
 			[trufflehogRunnerPath, targetPath, '--output', outputPath, '--no-verification'],
 			{
 				cwd: targetPath,
@@ -745,6 +770,12 @@ class VibeCheckSidebar implements vscode.WebviewViewProvider {
 				});
 
 				console.log('Combined scan results:', JSON.stringify(summary, null, 2));
+				try {
+					await writeScanFindings(outputPath);
+				} catch (error) {
+					const message = error instanceof Error ? error.message : String(error);
+					vscode.window.showWarningMessage(`Scan finished, but the findings file couldn't be written: ${message}`);
+				}
 			
 			} catch (error) {
 				const message = error instanceof Error
