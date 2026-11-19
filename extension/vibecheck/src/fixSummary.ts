@@ -5,6 +5,8 @@ import * as path from 'node:path';
 import { execFile } from 'node:child_process';
 import { readFile, writeFile } from 'node:fs/promises';
 import { findPython } from './python';
+import { ensureReportsFolder } from './reportsFolder';
+
 
 const SUMMARY_FILE = 'summary.md';
 const DATA_FILE = 'summary-data.json';
@@ -299,7 +301,11 @@ export async function appendFixSummary(
 	const storageUri = context.storageUri ?? context.globalStorageUri;
 	await vscode.workspace.fs.createDirectory(storageUri);
 	const dataPath = path.join(storageUri.fsPath, DATA_FILE);
-	const summaryPath = path.join(storageUri.fsPath, SUMMARY_FILE);
+
+
+	const summaryPath = projectRoot
+		? path.join(await ensureReportsFolder(projectRoot), SUMMARY_FILE)
+		: path.join(storageUri.fsPath, SUMMARY_FILE);
 
 	// Update this file's entry if it was fixed before; either way, move it to the top.
 	const records = await loadRecords(dataPath);

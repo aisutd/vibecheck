@@ -8,7 +8,7 @@ import { spawn } from 'node:child_process';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import { loadReports, type ScanSummary } from './reports';
-import { registerScanFindings, writeScanFindings } from './scanFindings';
+import { writeScanFindings } from './scanFindings';
 import {rmSync} from 'node:fs';
 
 import { findPython } from './python';
@@ -35,7 +35,6 @@ export function activate(context: vscode.ExtensionContext) {
 	);
 	// Registering the fix diff provider
 	registerFixDiff(context);
-	registerScanFindings(context);
 		context.subscriptions.push(
 		vscode.commands.registerCommand('vibecheck.fixCurrentFile', async () => {
 			const editor = vscode.window.activeTextEditor;
