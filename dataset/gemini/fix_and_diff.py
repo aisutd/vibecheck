@@ -89,27 +89,48 @@ def _strip_fences(text: str) -> str:
     match = re.fullmatch(r"\s*```[^\r\n`]*\r?\n(.*?)\r?\n```[ \t]*\s*", text, re.S)
     return match.group(1) + "\n" if match else text
 
+def _findings_from_reports(old_path: Path, reports_dir: Path) -> list[str] | None:
+    """This file's findings from the reports the Scan button wrote, or None if there are no reports."""
+    opengrep_report = reports_dir / "findings.json"
+    secrets_report = reports_dir / "trufflehog_report.json"
+    if not opengrep_report.exists() and not secrets_report.exists():
+        return None
 
-def fix_code(old_path: Path, old_code: str) -> str:
-    """Scan the original file and ask the local model for a repair."""
-    old_path = old_path.resolve()
     try:
-        scan = run_opengrep(old_path, [RULES])
-    except OpengrepError as exc:
-        raise FixError(str(exc)) from exc
-
-    if scan.get("errors"):
-        raise FixError("OpenGrep reported scan errors. Check the scanner and rules.")
+        relative = old_path.relative_to(reports_dir.resolve()).as_posix()
+    except ValueError:
+        return None 
 
     findings = []
-    for hit in scan.get("results", []):
-        details = hit["extra"]
-        findings.append(
-            f"- [{details['severity'].upper()}] Rule: {hit['check_id']}\n"
-            f"  Line {hit['start']['line']}: {details['message']}"
-        )
+    if opengrep_report.exists():
+        data = json.loads(opengrep_report.read_text(encoding="utf-8"))
+        for f in data.get("findings", []):
+            if Path(f.get("file", "")).as_posix() == relative:
+                findings.append(
+                    f"- [{str(f.get('severity', '')).upper()}] Rule: {f.get('rule_id')}\n"
+                    f"  Line {f.get('start_line')}: {f.get('message')}"
+                )
+
+    
+    if secrets_report.exists():
+        data = json.loads(secrets_report.read_text(encoding="utf-8"))
+        for f in data.get("findings", []):
+            if Path(f.get("file", "")).as_posix() == relative:
+                findings.append(
+                    f"- [SECRET] Detector: {f.get('detector')}\n"
+                    f"  Line {f.get('line')}: hardcoded {f.get('detector')} secret; replace it with an environment variable"
+                )
+    return findings
+
+def fix_code(old_path: Path, old_code: str, reports_dir: Path | None = None) -> str:
+    """Ask the local model to repair the file, using the findings the scan already produced."""
+    old_path = old_path.resolve()
+
+    findings = _findings_from_reports(old_path, reports_dir) if reports_dir else None
+    if findings is None:
+        raise FixError("No scan results found. Run a scan first, then click Fix.")
     if not findings:
-        raise FixError("OpenGrep found no issues to include in the repair prompt.")
+        raise FixError("No issues were found in this file to fix.")
 
     relative_path = (
         old_path.relative_to(REPO_ROOT).as_posix()
@@ -251,6 +272,8 @@ if __name__ == "__main__":
         "--explain", action="store_true",
         help="Read changes as JSON on stdin and print explanations as JSON, used by the extension",
     )
+    parser.add_argument("--reports-dir", type=Path,
+                        help="Project folder containing findings.json and trufflehog_report.json from the last scan")
     args = parser.parse_args()
 
     # Explain mode.
@@ -271,7 +294,7 @@ if __name__ == "__main__":
 
     print("Asking local Ollama for a fix...", file=sys.stderr)
     try:
-        new_code = fix_code(old_path, old_code)
+        new_code = fix_code(old_path, old_code, args.reports_dir)
     except FixError as e:
         print(f"Fix failed: {e}", file=sys.stderr)
         sys.exit(1)
