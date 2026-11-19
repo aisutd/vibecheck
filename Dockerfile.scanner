@@ -1,0 +1,33 @@
+FROM python:3.12-slim
+
+ARG TARGETARCH
+ARG OPENGREP_VERSION=1.27.1
+ARG TRUFFLEHOG_VERSION=3.99.9
+
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends ca-certificates curl git \
+    && rm -rf /var/lib/apt/lists/*
+
+RUN set -eux; \
+    case "$TARGETARCH" in \
+        arm64) opengrep_arch=aarch64 ;; \
+        amd64) opengrep_arch=x86_64 ;; \
+        *) echo "Unsupported architecture: $TARGETARCH" >&2; exit 1 ;; \
+    esac; \
+    curl -fsSL \
+        "https://github.com/opengrep/opengrep/releases/download/v${OPENGREP_VERSION}/opengrep_manylinux_${opengrep_arch}" \
+        -o /usr/local/bin/opengrep; \
+    chmod +x /usr/local/bin/opengrep; \
+    curl -fsSL \
+        "https://github.com/trufflesecurity/trufflehog/releases/download/v${TRUFFLEHOG_VERSION}/trufflehog_${TRUFFLEHOG_VERSION}_linux_${TARGETARCH}.tar.gz" \
+        -o /tmp/trufflehog.tar.gz; \
+    tar -xzf /tmp/trufflehog.tar.gz -C /usr/local/bin trufflehog; \
+    rm /tmp/trufflehog.tar.gz; \
+    opengrep --version; \
+    trufflehog --version
+
+WORKDIR /opt/vibecheck
+
+COPY extension/opengrep/ extension/opengrep/
+COPY extension/trufflehog/ extension/trufflehog/
+COPY rules/rules.yaml rules/rules.yaml
