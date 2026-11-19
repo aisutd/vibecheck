@@ -63,13 +63,20 @@ async function fixFile(uri: vscode.Uri, extensionPath: string): Promise<void> {
 	const python = findPython(repoRoot);
 	const script = path.join(repoRoot, 'dataset', 'gemini', 'fix_and_diff.py');
 
+	// The scan writes its reports into the project folder; pass it so the fix reuses those findings.
+	const projectRoot = vscode.workspace.getWorkspaceFolder(uri)?.uri.fsPath;
+	const scriptArgs = ['-X', 'utf8', script, uri.fsPath, '--stdout'];
+	if (projectRoot) {
+		scriptArgs.push('--reports-dir', projectRoot);
+	}
+
 	await vscode.window.withProgress(
 		{ location: vscode.ProgressLocation.Notification, title: `Vibe Check: generating and validating a fix for ${fileName}...` },
 		() =>
 			new Promise<void>((resolve) => {
 				execFile(
 					python,
-					['-X', 'utf8', script, uri.fsPath, '--stdout'],
+						scriptArgs,
 					{
 						cwd: repoRoot,
 						timeout: 780_000, // Gemini plus up to 300 seconds per scanner.
