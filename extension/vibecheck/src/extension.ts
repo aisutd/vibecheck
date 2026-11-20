@@ -57,8 +57,7 @@ async function fixFile(uri: vscode.Uri, extensionPath: string): Promise<void> {
 	}
 
 	// extension lives at <repo>/extension/vibecheck
-	const repoRoot = path.resolve(extensionPath, '..', '..');
-	const python = findPython(repoRoot);
+	const repoRoot = path.join(extensionPath, 'runtime');	const python = findPython(repoRoot);
 	const script = path.join(repoRoot, 'dataset', 'gemini', 'fix_and_diff.py');
 
 	// The scan writes its reports into the project folder; pass it so the fix reuses those findings.
