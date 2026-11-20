@@ -9,8 +9,7 @@ import * as os from 'node:os';
 import * as path from 'node:path';
 import { loadReports, type ScanSummary } from './reports';
 import { writeScanFindings } from './scanFindings';
-import {rmSync} from 'node:fs';
-
+import { copyFileSync, mkdtempSync, realpathSync, rmSync } from 'node:fs';
 import { findPython } from './python';
 
 // VS Code calls this method when the VibeCheck extension is activated
@@ -54,8 +53,7 @@ async function fixFile(uri: vscode.Uri, extensionPath: string): Promise<void> {
 	}
 
 	// extension lives at <repo>/extension/vibecheck
-	const repoRoot = path.resolve(extensionPath, '..', '..');
-	const python = findPython(repoRoot);
+	const repoRoot = path.join(extensionPath, 'runtime');	const python = findPython(repoRoot);
 	const script = path.join(repoRoot, 'dataset', 'gemini', 'fix_and_diff.py');
 
 	// The scan writes its reports into the project folder; pass it so the fix reuses those findings.
@@ -643,76 +641,36 @@ class VibeCheckSidebar implements vscode.WebviewViewProvider {
 		const targetPath = folders[0].uri.fsPath;
 
 		// Locates the opengrep runner.py file in the opengrep directory relative to the extension's URI and constructs its file system path.
-		const opengrepRunnerPath = vscode.Uri.joinPath(
-			this.extensionUri,
-			'..',
-			'opengrep',
-			'runner.py'
-		).fsPath;
-
-		// Locates the trufflehog runner.py file in the trufflehog directory relative to the extension's URI and constructs its file system path.
-		const trufflehogRunnerPath = vscode.Uri.joinPath(
-			this.extensionUri,
-			'..',
-			'trufflehog',
-			'trufflehog_runner.py'
-		).fsPath;
-
-		// Logging the target path and runner path to console.
-		console.log('Project to scan:', targetPath);
-		console.log('Opengrep runner:', opengrepRunnerPath);
-		console.log('Trufflehog runner:', trufflehogRunnerPath);
-
 		const outputPath = targetPath;
-		// Finding two levels up.
-		const python = findPython(path.resolve(this.extensionUri.fsPath, '..', '..'));
 
-
-
-		// Clearing older reports before starting scan runners.
+		let dockerReportPath: string;
 		try {
-			for (const name of ['findings.json', 'trufflehog_report.json']) {
-				rmSync(path.join(outputPath, name), { force: true });
-			}
+			dockerReportPath = mkdtempSync(
+				path.join(realpathSync(os.tmpdir()), 'vibecheck-scan-')
+			);
 		} catch (error) {
-			const message = error instanceof Error
-				? error.message
-				: String(error);
-
-			vscode.window.showErrorMessage(`Could not clear old reports: ${message}`);
-
+			vscode.window.showErrorMessage(`Could not create scan report folder: ${error}`);
 			this.setScanning(false);
 			return;
 		}
 
-		// Runs the Opengrep scanner script with the runner and target paths.
-		console.log('Opengrep scan in progress...');
-		const opengrepScanner = spawn(
-			python,
-			[opengrepRunnerPath, targetPath, '--out', outputPath],
-			{
-				cwd: targetPath,
-				env: {
-					...process.env,
-					PATH: [
-						path.join(os.homedir(), '.opengrep', 'cli', 'latest'),
-						process.env.PATH ?? ''
-					].join(path.delimiter)
-				}
-			}
-		);
+		const dockerArgs = [
+			'run', '--rm',
+			'--mount', `type=bind,source=${targetPath},target=${targetPath},readonly`,
+			'--mount', `type=bind,source=${dockerReportPath},target=/reports`,
+			'vibecheck-scanner:dev',
+		];
 
-		// Runs the Trufflehog scanner script with the runner and target paths.
-		console.log('Trufflehog scan in progress...');
-		const trufflehogScanner = spawn(
-			python,
-			[trufflehogRunnerPath, targetPath, '--output', outputPath, '--no-verification'],
-			{
-				cwd: targetPath,
-				env: process.env
-			}
-		);
+		const opengrepScanner = spawn('docker', [
+			...dockerArgs,
+			'python', 'extension/opengrep/runner.py', targetPath, '--out', '/reports',
+		]);
 
+		const trufflehogScanner = spawn('docker', [
+			...dockerArgs,
+			'python', 'extension/trufflehog/trufflehog_runner.py',
+			targetPath, '--output', '/reports', '--no-verification',
+		]);
 		// Log the output of the runners to the debug console.
 		opengrepScanner.stdout.on('data', data => {
 			console.log('[Opengrep]',data.toString().trim());
@@ -757,7 +715,9 @@ class VibeCheckSidebar implements vscode.WebviewViewProvider {
 					vscode.window.showErrorMessage('Scan failed. Both Opengrep and TruffleHog must complete successfully.');
 					return;
 				}
-
+				for (const name of ['findings.json', 'trufflehog_report.json']) {
+					copyFileSync(path.join(dockerReportPath, name), path.join(outputPath, name));
+				}
 				const summary = await loadReports(outputPath);
 
 				// Saves the scan results so they can be shown again later.
@@ -787,6 +747,11 @@ class VibeCheckSidebar implements vscode.WebviewViewProvider {
 				);
 			} finally {
 				this.setScanning(false);
+				try {
+					rmSync(dockerReportPath, { recursive: true, force: true });
+				} catch (error) {
+					console.warn('Could not remove temporary Docker scan reports:', error);
+				}
 			}
 		};
 
