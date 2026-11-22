@@ -57,7 +57,8 @@ def run_zap(project: Path, workdir: Path, port=None):
             raise ZapError("Could not build the app:\n" + b.stderr[-400:])
         r = docker("run", "-d", "--name", APP, "--network", NETWORK,
                    "-p", f"{port}:{port}", "--memory", "1g", "--cpus", "1",
-                   "--pids-limit", "256", "--security-opt", "no-new-privileges", IMAGE)
+                   "--pids-limit", "256", "--cap-drop", "ALL",
+                   "--security-opt", "no-new-privileges", IMAGE)
         if r.returncode != 0:
             raise ZapError("Could not start the app:\n" + r.stderr[-300:])
         wait_until_up(f"http://localhost:{port}")
