@@ -43,6 +43,12 @@ export async function writeScanFindings(projectRoot: string): Promise<void> {
 		}
 	}
 
+	for (const finding of await readFindings(path.join(projectRoot, 'zap_findings.json'))) {
+		if (isObject(finding)) {
+			add(finding.file, finding.start_line, firstSentence(String(finding.message ?? '')));
+		}
+	}
+
 
 	const files = [...byFile].sort((a, b) => b[1].length - a[1].length || a[0].localeCompare(b[0]));
 	const total = files.reduce((sum, [, list]) => sum + list.length, 0);

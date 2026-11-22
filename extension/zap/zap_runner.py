@@ -3,6 +3,7 @@ import re
 import subprocess
 import sys
 import time
+import urllib.error
 import urllib.request
 from pathlib import Path
 
@@ -81,10 +82,11 @@ if __name__ == "__main__":
     port = int(sys.argv[sys.argv.index("--port") + 1]) if "--port" in sys.argv else None
     start = time.time()
     try:
-        findings = run_zap(project, Path.cwd(), port)
+        findings = run_zap(project, project, port)
     except ZapError as e:
         sys.exit(f"Dynamic scan unavailable: {e}")
-    Path("zap_findings.json").write_text(
+    (project / "zap_findings.json").write_text(
         json.dumps({"count": len(findings), "findings": findings}, indent=2),
-        encoding="utf-8")
+        encoding="utf-8",
+    )
     print(f"Wrote {len(findings)} findings in {int(time.time() - start)} seconds")
