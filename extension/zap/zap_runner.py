@@ -70,6 +70,7 @@ def run_zap(project: Path, workdir: Path, port=None):
             raise ZapError("ZAP made no report:\n" + r.stdout[-300:])
         findings = zap_to_findings(json.loads(report.read_text(encoding="utf-8")))
         report.unlink()  # remove the temporary ZAP report
+        (workdir / "zap.yaml").unlink(missing_ok=True) # and Zap's plan file
         return findings
     finally:
         docker("rm", "-f", APP)
