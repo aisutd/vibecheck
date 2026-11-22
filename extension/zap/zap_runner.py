@@ -68,7 +68,9 @@ def run_zap(project: Path, workdir: Path, port=None):
         report = workdir / "zap.json"
         if not report.exists():
             raise ZapError("ZAP made no report:\n" + r.stdout[-300:])
-        return zap_to_findings(json.loads(report.read_text(encoding="utf-8")))
+        findings = zap_to_findings(json.loads(report.read_text(encoding="utf-8")))
+        report.unlink()  # remove the temporary ZAP report
+        return findings
     finally:
         docker("rm", "-f", APP)
         docker("network", "rm", NETWORK)
