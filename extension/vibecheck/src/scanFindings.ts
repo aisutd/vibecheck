@@ -4,7 +4,6 @@ import * as vscode from 'vscode';
 import * as path from 'node:path';
 import { writeFile } from 'node:fs/promises';
 import { isObject, readFindings, firstSentence } from './fixSummary';
-import { ensureReportsFolder } from './reportsFolder';
 
 const FINDINGS_FILE = 'scan-findings.md';
 
@@ -16,28 +15,28 @@ interface FindingLine {
 }
 
 
-export async function writeScanFindings(projectRoot: string): Promise<void> {
+export async function writeScanFindings(reportFolder: string): Promise<void> {
 	const byFile = new Map<string, FindingLine[]>();
 
 	const add = (file: unknown, line: unknown, text: string) => {
 		if (typeof file !== 'string' || !file.trim()) {
 			return;
 		}
-		const relativePath = path.isAbsolute(file) ? path.relative(projectRoot, file) : file;
+		const relativePath = file;
 		const lineNumber = Number(line);
 		const list = byFile.get(relativePath) ?? [];
 		list.push({ line: Number.isFinite(lineNumber) ? lineNumber : 0, text });
 		byFile.set(relativePath, list);
 	};
 
-	for (const finding of await readFindings(path.join(projectRoot, 'findings.json'))) {
+	for (const finding of await readFindings(path.join(reportFolder, 'findings.json'))) {
 		if (isObject(finding)) {
 			add(finding.file, finding.start_line, firstSentence(String(finding.message ?? '')));
 		}
 	}
 
 	
-	for (const finding of await readFindings(path.join(projectRoot, 'trufflehog_report.json'))) {
+	for (const finding of await readFindings(path.join(reportFolder, 'trufflehog_report.json'))) {
 		if (isObject(finding)) {
 			add(finding.file, finding.line, `Possible ${finding.detector} secret found in the code.`);
 		}
@@ -65,12 +64,7 @@ export async function writeScanFindings(projectRoot: string): Promise<void> {
 			lines.push('');
 		}
 	}
-
-
-
-		const findingsPath = path.join(await ensureReportsFolder(projectRoot), FINDINGS_FILE);
-
-	// Rewritten on every scan.
-	await writeFile(findingsPath, lines.join('\n'), 'utf8');
+	const findingsPath = path.join(reportFolder, FINDINGS_FILE);
+	await writeFile(findingsPath, lines.join('\n'), { encoding: 'utf8', flag: 'wx' });
 	await vscode.commands.executeCommand('markdown.showPreviewToSide', vscode.Uri.file(findingsPath));
 }

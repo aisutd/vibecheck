@@ -9,8 +9,10 @@ import * as os from 'node:os';
 import * as path from 'node:path';
 import { loadReports, type ScanSummary } from './reports';
 import { writeScanFindings } from './scanFindings';
-import { copyFileSync, mkdtempSync, realpathSync, rmSync } from 'node:fs';
+import { mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
+import { ensureReportsFolder } from './reportsFolder';
 import { findPython } from './python';
+const latestReportsByWorkspace = new Map<string, string>();
 
 // VS Code calls this method when the VibeCheck extension is activated
 export function activate(context: vscode.ExtensionContext) {
@@ -63,8 +65,12 @@ async function fixFile(uri: vscode.Uri, extensionPath: string): Promise<void> {
 	// The scan writes its reports into the project folder; pass it so the fix reuses those findings.
 	const projectRoot = vscode.workspace.getWorkspaceFolder(uri)?.uri.fsPath;
 	const scriptArgs = ['-X', 'utf8', script, uri.fsPath, '--stdout'];
-	if (projectRoot) {
-		scriptArgs.push('--reports-dir', projectRoot);
+	const reportFolder = projectRoot
+	? latestReportsByWorkspace.get(path.resolve(projectRoot))
+	: undefined;
+
+	if (reportFolder && projectRoot) {
+		scriptArgs.push('--reports-dir', reportFolder, '--workspace-root', projectRoot);
 	}
 
 	await vscode.window.withProgress(
@@ -643,7 +649,7 @@ class VibeCheckSidebar implements vscode.WebviewViewProvider {
 	}
 
 	// Creating Scan function to connect with opengrep and trufflehog runner.py files to scan the codebase for vulnerabilities.
-	public scan() {
+	public async scan() {
 		// Preliminary check to ensure that a workspace folder is open.
 		const folders = vscode.workspace.workspaceFolders;
 		if (!folders || folders.length === 0) {
@@ -665,10 +671,11 @@ class VibeCheckSidebar implements vscode.WebviewViewProvider {
 		const targetPath = folders[0].uri.fsPath;
 
 		// Locates the opengrep runner.py file in the opengrep directory relative to the extension's URI and constructs its file system path.
-		const outputPath = targetPath;
-
+		let outputPath: string;
 		let dockerReportPath: string;
 		try {
+
+			outputPath = await ensureReportsFolder(targetPath);
 			dockerReportPath = mkdtempSync(
 				path.join(realpathSync(os.tmpdir()), 'vibecheck-scan-')
 			);
@@ -678,22 +685,35 @@ class VibeCheckSidebar implements vscode.WebviewViewProvider {
 			return;
 		}
 
+		const containerWorkspace = '/workspace';
+
+		// Docker parses --mount as comma-separated fields. Quote the
+		// whole source field so commas in a host path stay in the path.
+		const mountSource = (hostPath: string): string =>
+			`"source=${hostPath.replace(/"/g, '""')}"`;
+
 		const dockerArgs = [
 			'run', '--rm',
-			'--mount', `type=bind,source=${targetPath},target=${targetPath},readonly`,
-			'--mount', `type=bind,source=${dockerReportPath},target=/reports`,
+			'--network', 'none',
+			'--memory', '1g',
+			'--cpus', '2',
+			'--mount', `type=bind,${mountSource(targetPath)},target=${containerWorkspace},readonly`,
+			'--mount', `type=bind,${mountSource(dockerReportPath)},target=/reports`,
 			'vibecheck-scanner:dev',
 		];
 
 		const opengrepScanner = spawn('docker', [
 			...dockerArgs,
-			'python', 'extension/opengrep/runner.py', targetPath, '--out', '/reports',
+			'timeout', '--kill-after=10s', '5m',
+			'python', 'extension/opengrep/runner.py',
+			containerWorkspace, '--out', '/reports',
 		]);
 
 		const trufflehogScanner = spawn('docker', [
 			...dockerArgs,
+			'timeout', '--kill-after=10s', '5m',
 			'python', 'extension/trufflehog/trufflehog_runner.py',
-			targetPath, '--output', '/reports', '--no-verification',
+			containerWorkspace, '--output', '/reports', '--no-verification',
 		]);
 		// Log the output of the runners to the debug console.
 		opengrepScanner.stdout.on('data', data => {
@@ -740,10 +760,43 @@ class VibeCheckSidebar implements vscode.WebviewViewProvider {
 					return;
 				}
 				for (const name of ['findings.json', 'trufflehog_report.json']) {
-					copyFileSync(path.join(dockerReportPath, name), path.join(outputPath, name));
-				}
-				const summary = await loadReports(outputPath);
+					const report = JSON.parse(readFileSync(path.join(dockerReportPath, name), 'utf8'));
 
+					if (!Array.isArray(report?.findings)) {
+						throw new Error(`${name} is missing its findings list.`);
+					}
+
+					for (const finding of report.findings) {
+						if (typeof finding?.file !== 'string') {
+							throw new Error(`${name} contains a finding without a file path.`);
+						}
+
+						const prefix = `${containerWorkspace}/`;
+						const relativePath: string = finding.file.startsWith(prefix)
+							? finding.file.slice(prefix.length)
+							: finding.file;
+
+						if (
+							path.posix.isAbsolute(relativePath) ||
+							path.win32.isAbsolute(relativePath) ||
+							/[:\\\u0000]/.test(relativePath) ||
+							relativePath.split('/').some(part => part === '' || part === '.' || part === '..')
+						) {
+							throw new Error(`${name} contains an invalid project-relative path.`);
+						}
+
+						finding.file = relativePath;
+					}
+
+					writeFileSync(path.join(outputPath, name), JSON.stringify(report, null, 2), {
+						encoding: 'utf8',
+						flag: 'wx',
+						mode: 0o600,
+					});
+				}
+
+				const summary = await loadReports(outputPath);
+				latestReportsByWorkspace.set(path.resolve(targetPath), outputPath);
 				// Saves the scan results so they can be shown again later.
 				this.latestSummary = summary;
 

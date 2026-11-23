@@ -89,7 +89,7 @@ def _strip_fences(text: str) -> str:
     match = re.fullmatch(r"\s*```[^\r\n`]*\r?\n(.*?)\r?\n```[ \t]*\s*", text, re.S)
     return match.group(1) + "\n" if match else text
 
-def _findings_from_reports(old_path: Path, reports_dir: Path) -> list[str] | None:
+def _findings_from_reports(old_path: Path, reports_dir: Path, workspace_root: Path) -> list[str] | None:
     """This file's findings from the reports the Scan button wrote, or None if there are no reports."""
     opengrep_report = reports_dir / "findings.json"
     secrets_report = reports_dir / "trufflehog_report.json"
@@ -97,7 +97,7 @@ def _findings_from_reports(old_path: Path, reports_dir: Path) -> list[str] | Non
         return None
 
     try:
-        relative = old_path.relative_to(reports_dir.resolve()).as_posix()
+        relative = old_path.relative_to(workspace_root.resolve()).as_posix()
     except ValueError:
         return None 
 
@@ -122,11 +122,11 @@ def _findings_from_reports(old_path: Path, reports_dir: Path) -> list[str] | Non
                 )
     return findings
 
-def fix_code(old_path: Path, old_code: str, reports_dir: Path | None = None) -> str:
+def fix_code(old_path: Path, old_code: str, reports_dir: Path | None = None, workspace_root: Path | None = None) -> str:
     """Ask the local model to repair the file, using the findings the scan already produced."""
     old_path = old_path.resolve()
 
-    findings = _findings_from_reports(old_path, reports_dir) if reports_dir else None
+    findings = _findings_from_reports(old_path, reports_dir, workspace_root or reports_dir) if reports_dir is not None else None
     if findings is None:
         raise FixError("No scan results found. Run a scan first, then click Fix.")
     if not findings:
@@ -274,6 +274,8 @@ if __name__ == "__main__":
     )
     parser.add_argument("--reports-dir", type=Path,
                         help="Project folder containing findings.json and trufflehog_report.json from the last scan")
+    parser.add_argument("--workspace-root", type=Path,
+                        help="Workspace folder that report file paths are relative to")
     args = parser.parse_args()
 
     # Explain mode.
@@ -294,7 +296,7 @@ if __name__ == "__main__":
 
     print("Asking local Ollama for a fix...", file=sys.stderr)
     try:
-        new_code = fix_code(old_path, old_code, args.reports_dir)
+        new_code = fix_code(old_path, old_code, args.reports_dir, args.workspace_root)
     except FixError as e:
         print(f"Fix failed: {e}", file=sys.stderr)
         sys.exit(1)

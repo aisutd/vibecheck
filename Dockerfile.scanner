@@ -30,4 +30,4 @@ WORKDIR /opt/vibecheck
 
 COPY extension/opengrep/ extension/opengrep/
 COPY extension/trufflehog/ extension/trufflehog/
-COPY rules/rules.yaml rules/rules.yaml
+COPY extension/vibecheck/runtime/rules/rules.yaml rules/rules.yaml

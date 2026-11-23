@@ -105,7 +105,19 @@ export async function loadReports(folderPath: string): Promise<ScanSummary> {
 		}
 
 		// Keeps paths relative to the scanned folder so the same file matches across both reports.
-		const relativePath = path.isAbsolute(file) ? path.relative(folderPath, file) : file;
+		const containerRoot = '/workspace/';
+		const relativePath = file.startsWith(containerRoot)
+			? file.slice(containerRoot.length)
+			: file;
+
+		if (
+			path.posix.isAbsolute(relativePath) ||
+			path.win32.isAbsolute(relativePath) ||
+			relativePath.includes('\\') ||
+			relativePath.split('/').some(part => part === '' || part === '.' || part === '..')
+		) {
+			throw new Error('A finding has a path outside the scanned folder.');
+		}
 		fileCounts.set(relativePath, (fileCounts.get(relativePath) ?? 0) + 1);
 	};
 
