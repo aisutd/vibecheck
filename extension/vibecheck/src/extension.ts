@@ -125,7 +125,9 @@ class VibeCheckSidebar implements vscode.WebviewViewProvider {
 			if (message.command === 'scan') {
 				this.scan();
 			}
-
+			if (message.command === 'dynamicScan') {
+				void this.runDynamicScan();
+			}
 			// Fix button in the files list.
 			if (message.command === 'fix' && typeof message.file === 'string') {
 				void this.fixFromSidebar(message.file);
@@ -409,6 +411,7 @@ class VibeCheckSidebar implements vscode.WebviewViewProvider {
 					
 					<div class = "actions">
             			<button id = "scan-button">Run scan</button>
+						<button id="dynamic-scan-button">Dynamic Scan</button>
         			</div>
 
 					<!-- Show scanning progress beneath the Run scan button. -->
@@ -447,6 +450,11 @@ class VibeCheckSidebar implements vscode.WebviewViewProvider {
 					<script>
 						const vscode = acquireVsCodeApi();
 						const scanButton = document.getElementById('scan-button');
+						const dynamicScanButton = document.getElementById('dynamic-scan-button');
+
+						dynamicScanButton.addEventListener('click', () => {
+							vscode.postMessage({ command: 'dynamicScan' });
+						});
 
 						// Predefined colors for different issue types in the findings summary.
 						const issueColors = ['#809FE3', '#D97879', '#B19ADD', '#D8AC67', '#78B7C5', '#CF91B3', '#A3D9A5', '#E0B0FF', '#FFB347', '#FF6961', '#77DD77', '#CBAACB', '#FDFD96', '#AEC6CF', '#FFDAB9'];
@@ -479,6 +487,7 @@ class VibeCheckSidebar implements vscode.WebviewViewProvider {
 								const isScanning = message.scanning;
 								document.getElementById('scan-loading').hidden = !isScanning;
 								scanButton.disabled = isScanning;
+								dynamicScanButton.disabled = isScanning;
 								scanButton.textContent = isScanning ? 'Scanning…' : 'Run scan';
 								return;
 							}
@@ -619,7 +628,41 @@ class VibeCheckSidebar implements vscode.WebviewViewProvider {
 			type: 'scanState', scanning
 		});
 	}
+	private async runDynamicScan(): Promise<void> {
+	if (this.scanning) {
+		return;
+	}
 
+	const projectRoot = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
+	if (!projectRoot || !vscode.workspace.isTrusted) {
+		vscode.window.showErrorMessage('Dynamic scan unavailable. Open a trusted project folder first.');
+		return;
+	}
+
+	const repoRoot = path.resolve(this.extensionUri.fsPath, '..', '..');
+	const runner = path.join(repoRoot, 'extension', 'zap', 'zap_runner.py');
+
+	this.setScanning(true);
+	try {
+		await new Promise<void>((resolve, reject) => {
+			execFile(findPython(repoRoot), [runner, projectRoot], { cwd: repoRoot },
+				(error, _stdout, stderr) => {
+					if (error) {
+						reject(new Error(stderr.trim() || error.message));
+						return;
+					}
+					resolve();
+				});
+		});
+
+		await writeScanFindings(projectRoot);
+	} catch (error) {
+		console.error('[VibeCheck Dynamic Scan]', error);
+		vscode.window.showErrorMessage('Dynamic scan unavailable. See the Debug Console for details.');
+	} finally {
+		this.setScanning(false);
+	}
+}
 	// Creating Scan function to connect with opengrep and trufflehog runner.py files to scan the codebase for vulnerabilities.
 	public scan() {
 		// Preliminary check to ensure that a workspace folder is open.
