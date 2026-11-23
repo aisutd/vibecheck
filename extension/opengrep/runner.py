@@ -81,8 +81,8 @@ if __name__ == "__main__":
     parser.add_argument("--out", type=Path, default=Path("output"), help="Where to write reports")
     args = parser.parse_args()
 
-    rules_root = Path.home() / "semgrep-rules"
-    rules = pick_rule_paths(args.target, rules_root)
+    repo_root = Path(__file__).resolve().parents[2]
+    rules = [repo_root / "rules" / "rules.yaml"]
 
     if not rules:
         print("No Python, JavaScript, or TypeScript files found; nothing for Opengrep to scan.", file=sys.stderr)

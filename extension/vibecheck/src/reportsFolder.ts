@@ -1,16 +1,24 @@
-// Creates the vibecheck-reports folder in the user's project.
-
 import * as path from 'node:path';
-import { mkdir, writeFile } from 'node:fs/promises';
+import { lstat, mkdir, mkdtemp, realpath, writeFile } from 'node:fs/promises';
 
-export const REPORTS_FOLDER = 'vibecheck-reports';
+export const REPORTS_FOLDER = '.vibecheck';
 
-// Makes sure the folder exists (with a .gitignore so it's never committed) and returns its path.
 export async function ensureReportsFolder(projectRoot: string): Promise<string> {
-	const folder = path.join(projectRoot, REPORTS_FOLDER);
-	await mkdir(folder, { recursive: true });
+	const folder = path.join(await realpath(projectRoot), REPORTS_FOLDER);
 
-	// "wx" only creates the file if it doesn't already exist, so a user's edits are kept.
+	try {
+		await mkdir(folder, { mode: 0o700 });
+	} catch (error) {
+		if ((error as NodeJS.ErrnoException).code !== 'EEXIST') {
+			throw error;
+		}
+	}
+
+	const info = await lstat(folder);
+	if (info.isSymbolicLink() || !info.isDirectory()) {
+		throw new Error('.vibecheck must be a real directory.');
+	}
+
 	try {
 		await writeFile(path.join(folder, '.gitignore'), '*\n', { flag: 'wx' });
 	} catch (error) {
@@ -19,5 +27,5 @@ export async function ensureReportsFolder(projectRoot: string): Promise<string> 
 		}
 	}
 
-	return folder;
+	return mkdtemp(path.join(folder, 'scan-'));
 }
