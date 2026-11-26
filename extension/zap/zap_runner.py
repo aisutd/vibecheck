@@ -40,7 +40,7 @@ def wait_until_up(url, seconds=120):
         except urllib.error.HTTPError:
             return  # app answered (even with an error page), so it is up
         except Exception:
-            time.sleep(3)
+            time.sleep(.25)
     raise ZapError(f"App did not start within {seconds} seconds.")
 
 
