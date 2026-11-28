@@ -23,12 +23,37 @@ def fix_for(message):
             return line
     return None
 
-
+def qwen_fix(message):
+    """Ask the local vibecheck model (Ollama) for one nginx line. Returns None if it fails."""
+    import urllib.request
+    prompt = (
+        "Reply with exactly one nginx add_header line that fixes this ZAP finding. "
+        "No explanation, no code fences.\n\nFinding: " + message
+    )
+    body = json.dumps({
+        "model": "vibecheck",
+        "stream": False,
+        "messages": [{"role": "user", "content": prompt}],
+    }).encode("utf-8")
+    try:
+        req = urllib.request.Request(
+            "http://localhost:11434/api/chat", body,
+            {"Content-Type": "application/json"})
+        reply = json.loads(urllib.request.urlopen(req, timeout=60).read())
+        line = reply["message"]["content"].strip().strip("`").strip()
+    except Exception:
+        return None
+    if line.startswith("add_header") and "example.com" not in line and "\n" not in line:
+        return line
+    return None
 def add_fixes(findings):
     for f in findings:
-        f["fix"] = fix_for(f.get("message", ""))
+        message = f.get("message", "")
+        safe = fix_for(message)
+        # Only ask Qwen for alerts we already know are header problems,
+        # then keep the vetted line if Qwen's answer fails the checks.
+        f["fix"] = (qwen_fix(message) or safe) if safe and safe.startswith("add_header") else safe
     return findings
-
 
 if __name__ == "__main__":
     if len(sys.argv) < 2:
